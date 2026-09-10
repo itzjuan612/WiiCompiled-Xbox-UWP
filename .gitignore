@@ -1,0 +1,15 @@
+# Game data (extracted disc contents, ISO/DOL/REL et al.) - never commit
+/MarioKart-extracted/
+
+# AI assistant chat/task logs
+.cptr/
+
+# Local tooling state
+.codegraph/
+.serena/
+
+# Personal runtime configuration (console paths, controller bindings)
+/Config.toml
+
+# Unused duplicate aurora checkout; the build uses wiicompiled/aurora-main/
+/aurora/

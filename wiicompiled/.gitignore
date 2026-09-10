@@ -1,0 +1,90 @@
+/generated/
+/Assets/
+/assets/
+/PulsarPacks/
+*.dol
+*.rel
+*.szs
+*.arc
+*.brres
+*.thp
+*.bmg
+*.brsar
+*.breff
+*.u8
+*.carc
+*.iso
+*.rvz
+*.wbfs
+*.nkit
+*.ciso
+*.gcm
+*.wad
+Code.pul
+
+# Build output
+/build/
+/build-*/
+/native-build/
+/native-build-macos/
+/local-products/
+/dist/
+/out/
+[Bb]in/
+[Oo]bj/
+*.o
+*.obj
+*.a
+*.lib
+*.pdb
+*.ilk
+*.map
+CMakeCache.txt
+CMakeFiles/
+cmake-build-*/
+
+
+# .NET
+/translator/TestResults/
+**/TestResults/
+*.user
+*.suo
+*.userprefs
+project.lock.json
+.packages/
+
+# Launcher artifacts
+/Launcher/artifacts/
+/Launcher/dist/
+/Launcher/WiiCompiled-Setup.exe
+*.exe
+*.msi
+
+
+# Local tooling and editors
+/.vs/
+/.vscode/
+/.idea/
+/tools/
+/TEMP/
+/tmp/
+/test_output/
+*.log
+output.txt
+
+# UWP build output and probe scratch
+/native-build-uwp/
+/Launcher/uwp-dawn/build/
+/Launcher/uwp-smoke/
+
+# UWP packaging: signed packages and signing material are produced locally and
+# must never be committed (the .pfx is a private key; the appx embeds it).
+/Launcher/uwp-appx/*.appx
+/Launcher/uwp-appx/*.pfx
+/Launcher/uwp-appx/*.cer
+/Launcher/uwp-appx/deploy-result.txt
+# Runtime binaries staged into the appx layout by the packaging step.
+/Launcher/uwp-appx/package/*.dll
+/Launcher/uwp-appx/package/WiiCompiled.exe
+/Launcher/uwp-appx/package/Config.toml
+

@@ -1,0 +1,28 @@
+# Normalize line endings in the repository; text files are stored as LF.
+* text=auto
+
+# Patch files must stay LF: git apply matches context bytes against LF upstream sources.
+*.patch -text
+
+# Binary assets - never touch these.
+*.png binary
+*.jpg binary
+*.ico binary
+*.bin binary
+*.db binary
+*.dds binary
+*.pfx binary
+*.cer binary
+*.appx binary
+*.dll binary
+*.exe binary
+*.lib binary
+*.pdb binary
+*.obj binary
+*.tar.gz binary
+*.zip binary
+
+# Windows scripts should keep CRLF on checkout for the platform tools that read them.
+*.ps1 text eol=crlf
+*.bat text eol=crlf
+*.cmd text eol=crlf

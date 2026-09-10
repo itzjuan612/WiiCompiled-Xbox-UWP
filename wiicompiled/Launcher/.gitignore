@@ -1,0 +1,7 @@
+/artifacts/
+/dist/
+**/bin/
+**/obj/
+
+# Scratch status dump
+gitstatus.txt
