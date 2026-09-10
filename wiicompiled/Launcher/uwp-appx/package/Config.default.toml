@@ -4,7 +4,7 @@
 [video]
 widescreen = true
 resolution_multiplier = 2
-frame_interpolation_fps = 0
+frame_interpolation_fps = 120
 display_mode = "windowed"
 graphics_api = "auto"
 skip_unready_pipelines = true
