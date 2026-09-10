@@ -28,7 +28,76 @@ builds on that work; this document only covers what the UWP/Xbox port adds or ch
 - Boots and plays on **Xbox Series S** in Developer Mode at 60fps, running the full game (Grand Prix,
   time trials, cutscenes) from an external USB drive.
 - Xbox pads and DualSense controllers are both mapped correctly.
+- **Retro Rewind** is supported as a second packaged product, including its **online (Retro-WFC)**
+  play: it boots, applies its Riivolution overlays, and connects to the Retro-WFC server for
+  matchmaking and races.
 - The **desktop UWP** target renders correctly as well.
+
+## Retro Rewind
+
+The upstream project builds Retro Rewind as a separate static product (`RetroRewind.exe`) from the
+mod's `Code.pul`. This port does the same and ships both executables in one package:
+
+- `AppxManifest.xml` declares **two applications** — `WiiCompiled.exe` and `RetroRewind.exe` — so
+  the base game and the mod are both launchable and share one app data directory (and therefore the
+  same save/NAND).
+- Export a Retro Rewind install to the console (e.g. `E:\RetroRewind\RetroRewind6`) and set
+  `[paths] retro_rewind_root` plus `overlay_roots` in `Config.toml`:
+
+  ```toml
+  [paths]
+  retro_rewind_root = "E:\\RetroRewind\\RetroRewind6"
+  overlay_roots = ["E:\\RetroRewind"]
+  ```
+
+- Online play is enabled at translation time via the signed Retro-WFC payload; the runtime's
+  `[OSReport] WWFC_NOTICE: Payload version …` line confirms it is active. No host rewriting is done in
+  the socket layer — the payload redirects the Nintendo WFC hostnames itself.
+
+### Building Retro Rewind
+
+Before configuring the UWP build, generate the Retro Rewind translation (see
+`wiicompiled/Launcher/LocalBuild.ps1` for the canonical argument list). The rough sequence, run from
+`wiicompiled/` with the translator CLI:
+
+```powershell
+# 1. base translation (records mod-patch awareness)
+dotnet translator\src\Translator.Cli\bin\Release\net8.0\Translator.Cli.dll translate-recursive 0x800060A4 `
+  --project projects\mkwii\recomp.yml --outdir generated\functions `
+  --output-metadata generated\base_translation_output.json `
+  --production-source-bundle generated\base_translation_sources.bin `
+  --no-function-files --prune-stale --threads 16
+
+# 2. base manifest
+dotnet ...\Translator.Cli.dll emit-base-manifest --project projects\mkwii\recomp.yml `
+  --out build\base --functions-dir generated\functions `
+  --translation-output-metadata generated\base_translation_output.json --region P
+
+# 3. translate the mod (downloads + validates the signed Retro-WFC payload)
+dotnet ...\Translator.Cli.dll translate-mod --project projects\mkwii\recomp.yml --profile retro-rewind `
+  --base-manifest build\base\mkwii_base_manifest.json `
+  --base-translation-output-metadata generated\base_translation_output.json `
+  --code-pul "<RetroRewind6>\Binaries\Code.pul" --mod-root "<RetroRewind6>" `
+  --mod-name "Retro Rewind" --region P --out build\mods\retro_rewind_full_cpp `
+  --prefer-cached-inputs --emit-cpp --threads 16 `
+  --retro-wfc-payload http://nas.play.rwfc.net/payload?g=RMCPD00
+
+# 4. data init + build shards
+dotnet ...\Translator.Cli.dll generate-data-init --project projects\mkwii\recomp.yml
+dotnet ...\Translator.Cli.dll emit-build-shards --project projects\mkwii\recomp.yml `
+  --base-metadata generated\base_translation_output.json --base-functions-dir generated\functions `
+  --native-source-dir runtime\src --out generated\build_shards `
+  --resolved-profile build\mods\retro_rewind_full_cpp\resolved_dispatch_profile.json `
+  --retro-cpp-dir build\mods\retro_rewind_full_cpp\cpp
+```
+
+Then configure and build both products:
+
+```powershell
+.\Launcher\configure-uwp-msvc.ps1
+.\Launcher\build-uwp-msvc.ps1 -Target mkw_release
+```
+
 
 ## What the UWP port had to fix
 
@@ -88,6 +157,19 @@ following is a real change in this repo:
 - The runtime seeds a fresh user `Config.toml` from a `Config.default.toml` shipped next to the
   executable (inside the appx), then falls back to the built-in template. This lets an installation
   ship sensible defaults. See `runtime/include/runtime_config.h`.
+
+### Retro Rewind product
+
+- **Trailing labels before `}` are now portable.** The mod's C++ emitter could place a continuation
+  label immediately before a block's closing brace. That is valid C but ill-formed C++ — Clang
+  tolerated it, MSVC rejects it (`C2059: syntax error: '}'`). The translator now emits a null
+  statement after such a label.
+- **The `.S` data blob avoids MSVC C/C++ flags.** The Retro Rewind translated data blob (`.S`) was
+  compiled as part of `mkw_retro_rewind_functions`, so the Clang ASM wrapper received MSVC-only flags
+  and failed. On UWP it is now built in its own option-free object target, mirroring the base
+  product.
+- **RetroRewind gets the C++/CX entry stub.** The CoreWindow entry stub is a per-executable entry
+  point, so `RetroRewind` builds it too.
 
 ## Building
 
