@@ -9,7 +9,7 @@
   <Identity
     Name="e2f1c9a4-6b3d-4e8f-9a2c-1d5b7f0e8a31"
     Publisher="CN=MKWii"
-    Version="0.1.1.0" />
+    Version="0.1.2.0" />
 
   <mp:PhoneIdentity PhoneProductId="e2f1c9a4-6b3d-4e8f-9a2c-1d5b7f0e8a31" PhonePublisherId="00000000-0000-0000-0000-000000000000"/>
 
@@ -36,6 +36,19 @@
         Square150x150Logo="Assets\Square150x150Logo.png"
         Square44x44Logo="Assets\Square44x44Logo.png"
         Description="Wii emulator runtime"
+        BackgroundColor="transparent">
+        <uap:DefaultTile Wide310x150Logo="Assets\Wide310x150Logo.png"/>
+        <uap:SplashScreen Image="Assets\SplashScreen.png"/>
+      </uap:VisualElements>
+    </Application>
+    <Application Id="RetroRewind"
+      Executable="RetroRewind.exe"
+      EntryPoint="WiiCompiled.App">
+      <uap:VisualElements
+        DisplayName="Retro Rewind"
+        Square150x150Logo="Assets\Square150x150Logo.png"
+        Square44x44Logo="Assets\Square44x44Logo.png"
+        Description="Mario Kart Wii - Retro Rewind"
         BackgroundColor="transparent">
         <uap:DefaultTile Wide310x150Logo="Assets\Wide310x150Logo.png"/>
         <uap:SplashScreen Image="Assets\SplashScreen.png"/>

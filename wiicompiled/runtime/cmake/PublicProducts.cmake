@@ -196,12 +196,28 @@ if(MKW_HAVE_RETRO_REWIND)
         target_precompile_headers(mkw_retro_sensitive REUSE_FROM mkw_base_shared)
     endif()
 
-    set(MKW_RETRO_TRANSLATED_SOURCES ${MKW_RETRO_MOD_SHARDS} ${MKW_RETRO_EXTRA_SOURCES})
     set(MKW_RETRO_BLOB_OBJECTS)
+    set(MKW_RETRO_TRANSLATED_SOURCES ${MKW_RETRO_MOD_SHARDS})
     foreach(source IN LISTS MKW_RETRO_EXTRA_SOURCES)
         if(source MATCHES "\\.S$")
             enable_language(ASM)
-            set_source_files_properties("${source}" PROPERTIES LANGUAGE ASM SKIP_PRECOMPILE_HEADERS ON)
+            set_source_files_properties("${source}" PROPERTIES
+                LANGUAGE ASM SKIP_PRECOMPILE_HEADERS ON SKIP_UNITY_BUILD_INCLUSION ON)
+            if(MKW_PLATFORM_UWP)
+                # UWP: the ASM compiler is the Clang wrapper, which rejects the
+                # MSVC-only C/C++ flags applied to mkw_retro_rewind_functions
+                # ("no such file or directory: '/O2'"). Compile the data blob in
+                # its own option-free object target, exactly as the base product
+                # does with mkw_data_init_blob, and inject it into RetroRewind.
+                get_filename_component(blob_name "${source}" NAME_WE)
+                add_library(mkw_retro_blob_${blob_name} OBJECT "${source}")
+                list(APPEND MKW_RETRO_BLOB_OBJECTS
+                    $<TARGET_OBJECTS:mkw_retro_blob_${blob_name}>)
+            else()
+                list(APPEND MKW_RETRO_TRANSLATED_SOURCES "${source}")
+            endif()
+        else()
+            list(APPEND MKW_RETRO_TRANSLATED_SOURCES "${source}")
         endif()
     endforeach()
     add_library(mkw_retro_rewind_functions OBJECT ${MKW_RETRO_TRANSLATED_SOURCES})
@@ -386,6 +402,12 @@ if(MKW_HAVE_RETRO_REWIND)
     target_sources(RetroRewind PRIVATE $<TARGET_OBJECTS:mkw_retro_rewind_functions>)
     if(MKW_RETRO_BLOB_OBJECTS)
         target_sources(RetroRewind PRIVATE ${MKW_RETRO_BLOB_OBJECTS})
+    endif()
+    # UWP: RetroRewind is a second packaged executable and needs the same C++/CX
+    # CoreWindow entry stub the base product gets above (it is a per-executable
+    # entry point, so it cannot be shared as an interface).
+    if(TARGET mkw_winrt_main_stub)
+        target_sources(RetroRewind PRIVATE $<TARGET_OBJECTS:mkw_winrt_main_stub>)
     endif()
     add_custom_target(mkw_release DEPENDS WiiCompiled RetroRewind)
 else()

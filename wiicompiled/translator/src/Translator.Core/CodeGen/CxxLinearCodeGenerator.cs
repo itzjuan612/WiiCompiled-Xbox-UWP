@@ -489,6 +489,7 @@ public sealed partial class CxxLinearCodeGenerator
                             break;
                     }
 
+                    EnsureLabelHasStatement(body);
                     body.AppendLine("}");
                     body.AppendLine();
                 }

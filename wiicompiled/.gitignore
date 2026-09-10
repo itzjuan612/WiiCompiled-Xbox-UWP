@@ -86,5 +86,7 @@ output.txt
 # Runtime binaries staged into the appx layout by the packaging step.
 /Launcher/uwp-appx/package/*.dll
 /Launcher/uwp-appx/package/WiiCompiled.exe
+/Launcher/uwp-appx/package/RetroRewind.exe
+/Launcher/uwp-appx/package/initial_pipeline_cache.db
 /Launcher/uwp-appx/package/Config.toml
 

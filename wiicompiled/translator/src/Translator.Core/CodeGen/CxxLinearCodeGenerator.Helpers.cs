@@ -61,6 +61,49 @@ public sealed partial class CxxLinearCodeGenerator
         return $"loc_{clean}";
     }
 
+    /// <summary>
+    /// A C++ label must precede a statement; a goto target that lands on the closing brace of its
+    /// block (which happens when an instruction-continuation label is the last thing a block emits)
+    /// is ill-formed and MSVC rejects it with C2059 while Clang tolerates it as an extension. Emit a
+    /// null statement after a trailing label so the emitted translation unit is portable.
+    /// </summary>
+    private static void EnsureLabelHasStatement(StringBuilder body)
+    {
+        var end = body.Length;
+        while (end > 0 && (body[end - 1] == '\n' || body[end - 1] == '\r'))
+        {
+            --end;
+        }
+        var start = end;
+        while (start > 0 && body[start - 1] != '\n' && body[start - 1] != '\r')
+        {
+            --start;
+        }
+
+        var colon = end;
+        while (colon > start && (body[colon - 1] == ' ' || body[colon - 1] == '\t'))
+        {
+            --colon;
+        }
+        if (colon == start || body[colon - 1] != ':')
+        {
+            return;
+        }
+
+        var nameEnd = colon - 1;
+        var nameStart = nameEnd;
+        while (nameStart > start && (char.IsLetterOrDigit(body[nameStart - 1]) || body[nameStart - 1] == '_'))
+        {
+            --nameStart;
+        }
+        if (nameStart == nameEnd)
+        {
+            return;
+        }
+
+        body.AppendLine("    ;");
+    }
+
     private static string SanitizeIdentifier(string name)
     {
         if (string.IsNullOrWhiteSpace(name))
