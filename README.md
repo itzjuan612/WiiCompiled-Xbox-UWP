@@ -99,6 +99,44 @@ Then configure and build both products:
 ```
 
 
+## Installing on an Xbox (Developer Mode)
+
+This repository ships **source only** — no prebuilt package, because an appx contains the statically
+recompiled game code built from your own disc. Build it yourself (see [Building](#building)), then
+sideload to a console in Developer Mode.
+
+1. **Enable Developer Mode** on the console (Xbox Dev Mode app) and note the console's IP address.
+2. **Turn on Device Portal** (Dev Home → Remote Access) and sign in at `https://<console-ip>:11443`
+   with your console credentials. The browser will warn about the console's self-signed certificate;
+   that is expected.
+3. **Sign your package with a certificate you trust.** The appx is self-signed, so the console must
+   trust the signing certificate before it will install:
+   - Generate a self-signed code-signing certificate (subject can be anything, e.g. `CN=MKWii`) and
+     sign the appx with it. `wiicompiled/Launcher/uwp-appx/deploy-elevated.ps1` takes `-PfxPath`,
+     `-PfxPassword`, and `-AppxPath` for exactly this.
+   - Install the matching `.cer` into the console's **Trusted People** and **Trusted Root** stores
+     (on a PC, import it once with `Import-Certificate`; for the console, deploy a package signed by
+     it, or import the certificate through Device Portal).
+4. **Treat the app as a Game** (required for its full memory budget). In Device Portal → Settings set
+   **`DefaultUWPContentTypeToGame = true`**, then reboot the console. Skipping this leaves the app
+   registered as an *App* with a small commit budget, which causes crashes during a race.
+5. **Deploy** the appx via Device Portal → Apps → Deploy App (or `WinAppDeployCmd`), then launch
+   **WiiCompiled** or **Retro Rewind** from the console. A re-deploy of a *higher* version preserves
+   the app data / save; a fresh install creates it.
+6. **Supply game data on an external USB drive** (see `[paths]` below) and point the config at it.
+
+## Configuration
+
+The runtime seeds a fresh user `Config.toml` from `Config.default.toml` shipped next to the
+executable, then falls back to a built-in template. The important section is `[paths]`:
+
+```toml
+[paths]
+dvd_root = "E:\\DATA"                        # extracted Mario Kart Wii PAL DATA directory
+retro_rewind_root = "E:\\RetroRewind\\RetroRewind6"
+overlay_roots = ["E:\\RetroRewind"]
+```
+
 ## What the UWP port had to fix
 
 Getting a desktop codebase running in the Xbox AppContainer surfaced a number of issues. Each of the
