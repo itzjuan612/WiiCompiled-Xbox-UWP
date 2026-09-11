@@ -1,7 +1,8 @@
-#pragma once
+﻿#pragma once
 
 
 #include "ppc_isa_config.h"
+#include "silent_abort.h"
 #include "ppc_isa_context.h"
 #include "ppc_isa_float.h"
 #include "big_endian.h"
@@ -842,7 +843,7 @@ MKW_PPC_FORCE_INLINE double PPC_PsqLInline(CpuContext* cpu, uint32_t addr)
     static_assert(I < 8u, "psq load GQR index must be 0..7");
     if (!cpu) [[unlikely]]
     {
-        std::abort();
+        MKW_SILENT_ABORT("isa:PPC_PsqLInline null-cpu");
     }
 
     const uint32_t gqr = cpu->gqr[I];
@@ -911,7 +912,7 @@ MKW_PPC_FORCE_INLINE double PPC_PsqLGqrInline(CpuContext* cpu, uint32_t gqrValue
 {
     if (!cpu) [[unlikely]]
     {
-        std::abort();
+        MKW_SILENT_ABORT("isa:PPC_PsqLGqrInline null-cpu");
     }
     return PPC_PsqLGqrInline<W, I>(gqrValue, addr);
 }
@@ -1016,7 +1017,7 @@ MKW_PPC_FORCE_INLINE double PPC_PsqLStackInline(CpuContext* cpu, uint32_t addr)
     static_assert(I < 8u, "psq stack load GQR index must be 0..7");
     if (!cpu) [[unlikely]]
     {
-        std::abort();
+        MKW_SILENT_ABORT("isa:PPC_PsqLStackInline null-cpu");
     }
 
     const uint32_t gqr = cpu->gqr[I];
@@ -1157,7 +1158,7 @@ MKW_PPC_FORCE_INLINE void PPC_PsqStInline(CpuContext* cpu, uint32_t addr, double
     static_assert(I < 8u, "psq store GQR index must be 0..7");
     if (!cpu) [[unlikely]]
     {
-        std::abort();
+        MKW_SILENT_ABORT("isa:PPC_PsqStInline null-cpu");
     }
 
     const uint32_t gqr = cpu->gqr[I];
@@ -1225,7 +1226,7 @@ MKW_PPC_FORCE_INLINE void PPC_PsqStGqrInline(CpuContext* cpu, uint32_t gqrValue,
 {
     if (!cpu) [[unlikely]]
     {
-        std::abort();
+        MKW_SILENT_ABORT("isa:PPC_PsqStGqrInline null-cpu");
     }
     PPC_PsqStGqrInline<W, I>(gqrValue, addr, value);
 }
@@ -1349,7 +1350,7 @@ MKW_PPC_FORCE_INLINE void PPC_PsqStStackInline(CpuContext* cpu, uint32_t addr, d
     static_assert(I < 8u, "psq stack store GQR index must be 0..7");
     if (!cpu) [[unlikely]]
     {
-        std::abort();
+        MKW_SILENT_ABORT("isa:PPC_PsqStStackInline null-cpu");
     }
 
     const uint32_t gqr = cpu->gqr[I];
@@ -1400,7 +1401,7 @@ MKW_PPC_NO_INLINE MKW_PPC_COLD inline double PPC_PsqLStateFallback(uint32_t gqr,
         case 5u: return Stack ? PpcLoadPairPsqIntegerStackInline<uint16_t>(addr, scale) : PpcLoadPairPsqIntegerFastInline<uint16_t>(addr, scale);
         case 6u: return Stack ? PpcLoadPairPsqIntegerStackInline<int8_t>(addr, scale) : PpcLoadPairPsqIntegerFastInline<int8_t>(addr, scale);
         case 7u: return Stack ? PpcLoadPairPsqIntegerStackInline<int16_t>(addr, scale) : PpcLoadPairPsqIntegerFastInline<int16_t>(addr, scale);
-        default: std::abort();
+        default: MKW_SILENT_ABORT("isa:PPC_PsqLStateFallback reserved-load-type W=0");
         }
     }
     else
@@ -1412,7 +1413,7 @@ MKW_PPC_NO_INLINE MKW_PPC_COLD inline double PPC_PsqLStateFallback(uint32_t gqr,
         case 5u: return Stack ? PpcLoadSinglePsqQuantizedStackInline<uint16_t>(addr, scale) : PpcLoadSinglePsqQuantizedFastInline<uint16_t>(addr, scale);
         case 6u: return Stack ? PpcLoadSinglePsqQuantizedStackInline<int8_t>(addr, scale) : PpcLoadSinglePsqQuantizedFastInline<int8_t>(addr, scale);
         case 7u: return Stack ? PpcLoadSinglePsqQuantizedStackInline<int16_t>(addr, scale) : PpcLoadSinglePsqQuantizedFastInline<int16_t>(addr, scale);
-        default: std::abort();
+        default: MKW_SILENT_ABORT("isa:PPC_PsqLStateFallback reserved-load-type W=1");
         }
     }
 }
@@ -1461,7 +1462,7 @@ MKW_PPC_NO_INLINE MKW_PPC_COLD inline void PPC_PsqStStateFallback(uint32_t gqr, 
         case 5u: if constexpr (Stack) PpcStorePairPsqQuantizedStackInline<uint16_t>(addr, value, scale); else PpcStorePairPsqQuantizedFastInline<uint16_t>(addr, value, scale); return;
         case 6u: if constexpr (Stack) PpcStorePairPsqQuantizedStackInline<int8_t>(addr, value, scale); else PpcStorePairPsqQuantizedFastInline<int8_t>(addr, value, scale); return;
         case 7u: if constexpr (Stack) PpcStorePairPsqQuantizedStackInline<int16_t>(addr, value, scale); else PpcStorePairPsqQuantizedFastInline<int16_t>(addr, value, scale); return;
-        default: std::abort();
+        default: MKW_SILENT_ABORT("isa:PPC_PsqStStateFallback reserved-store-type W=0");
         }
     }
     else
@@ -1473,7 +1474,7 @@ MKW_PPC_NO_INLINE MKW_PPC_COLD inline void PPC_PsqStStateFallback(uint32_t gqr, 
         case 5u: if constexpr (Stack) PpcStoreSinglePsqQuantizedStackInline<uint16_t>(addr, value, scale); else PpcStoreSinglePsqQuantizedFastInline<uint16_t>(addr, value, scale); return;
         case 6u: if constexpr (Stack) PpcStoreSinglePsqQuantizedStackInline<int8_t>(addr, value, scale); else PpcStoreSinglePsqQuantizedFastInline<int8_t>(addr, value, scale); return;
         case 7u: if constexpr (Stack) PpcStoreSinglePsqQuantizedStackInline<int16_t>(addr, value, scale); else PpcStoreSinglePsqQuantizedFastInline<int16_t>(addr, value, scale); return;
-        default: std::abort();
+        default: MKW_SILENT_ABORT("isa:PPC_PsqStStateFallback reserved-store-type W=1");
         }
     }
 }
@@ -1527,7 +1528,7 @@ MKW_PPC_FORCE_INLINE double PPC_PsqLResolvedStateInline(
         case 5u: return PpcLoadPairPsqIntegerResolvedInline<uint16_t>(resolvedHost, offset, addr, scale);
         case 6u: return PpcLoadPairPsqIntegerResolvedInline<int8_t>(resolvedHost, offset, addr, scale);
         case 7u: return PpcLoadPairPsqIntegerResolvedInline<int16_t>(resolvedHost, offset, addr, scale);
-        default: std::abort();
+        default: MKW_SILENT_ABORT("isa:PPC_PsqLResolvedStateInline reserved-load-type W=0");
         }
     }
     else
@@ -1539,7 +1540,7 @@ MKW_PPC_FORCE_INLINE double PPC_PsqLResolvedStateInline(
         case 5u: return PpcLoadSinglePsqQuantizedResolvedInline<uint16_t>(resolvedHost, offset, addr, scale);
         case 6u: return PpcLoadSinglePsqQuantizedResolvedInline<int8_t>(resolvedHost, offset, addr, scale);
         case 7u: return PpcLoadSinglePsqQuantizedResolvedInline<int16_t>(resolvedHost, offset, addr, scale);
-        default: std::abort();
+        default: MKW_SILENT_ABORT("isa:PPC_PsqLResolvedStateInline reserved-load-type W=1");
         }
     }
 }
@@ -1565,7 +1566,7 @@ MKW_PPC_FORCE_INLINE void PPC_PsqStResolvedStateInline(
         case 5u: PpcStorePairPsqQuantizedResolvedInline<uint16_t>(resolvedHost, offset, addr, value, scale); return;
         case 6u: PpcStorePairPsqQuantizedResolvedInline<int8_t>(resolvedHost, offset, addr, value, scale); return;
         case 7u: PpcStorePairPsqQuantizedResolvedInline<int16_t>(resolvedHost, offset, addr, value, scale); return;
-        default: std::abort();
+        default: MKW_SILENT_ABORT("isa:PPC_PsqStResolvedStateInline reserved-store-type W=0");
         }
     }
     else
@@ -1577,7 +1578,7 @@ MKW_PPC_FORCE_INLINE void PPC_PsqStResolvedStateInline(
         case 5u: PpcStoreSinglePsqQuantizedResolvedInline<uint16_t>(resolvedHost, offset, addr, value, scale); return;
         case 6u: PpcStoreSinglePsqQuantizedResolvedInline<int8_t>(resolvedHost, offset, addr, value, scale); return;
         case 7u: PpcStoreSinglePsqQuantizedResolvedInline<int16_t>(resolvedHost, offset, addr, value, scale); return;
-        default: std::abort();
+        default: MKW_SILENT_ABORT("isa:PPC_PsqStResolvedStateInline reserved-store-type W=1");
         }
     }
 }

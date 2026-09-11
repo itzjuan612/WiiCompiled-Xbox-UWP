@@ -4,7 +4,11 @@
 #include "isa/ppc_isa_cr.h"
 #include "memory.h"
 #include "runtime_log.h"
+#include "silent_abort.h"
 #include "timebase_contract.h"
+
+// Site marker consumed by the SIGABRT fatal handler (see silent_abort.h).
+const char* g_mkwSilentAbortSite = nullptr;
 
 #include <array>
 #include <bitset>
@@ -829,7 +833,7 @@ extern "C" double PPC_PsqL(uint32_t addr, uint32_t w, uint32_t i)
 {
     CpuContext* cpu = TryGetCpuContext();
     if (!cpu) {
-        std::abort();  // CpuContext must never be null in PPC_PsqL
+        MKW_SILENT_ABORT("ppc_helpers.cpp:PPC_PsqL null-cpu");  // CpuContext must never be null in PPC_PsqL
     }
 
     const uint32_t gqr = cpu->gqr[i & 7];
@@ -842,7 +846,7 @@ extern "C" void PPC_PsqSt(uint32_t addr, double value, uint32_t w, uint32_t i)
     CpuContext* cpu = TryGetCpuContext();
     if (!cpu)
     {
-        std::abort();
+        MKW_SILENT_ABORT("ppc_helpers.cpp:PPC_PsqSt null-cpu");
     }
 
     const uint32_t gqr = cpu->gqr[i & 7];

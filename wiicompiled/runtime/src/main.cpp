@@ -23,6 +23,8 @@
 #include <unordered_map>
 #include <vector>
 
+#include "silent_abort.h"
+
 #if !defined(_WIN32)
 #include <unistd.h>
 #endif
@@ -1326,7 +1328,9 @@ void AbortSignalHandler(int signum) {
         std::_Exit(EXIT_FAILURE);
     }
 
-    WriteFatalLogImpl("sigabrt");
+    WriteFatalLogImpl("sigabrt",
+                      g_mkwSilentAbortSite ? std::string_view{g_mkwSilentAbortSite}
+                                           : std::string_view{});
 
     std::fflush(stderr);
     std::fflush(stdout);
