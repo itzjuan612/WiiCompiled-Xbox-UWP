@@ -224,7 +224,14 @@ private:
 } // namespace aurora
 
 namespace aurora::gfx {
+// true on Xbox UWP: the D3D12 driver mishandles Queue::WriteTexture there
+// (row smear inside texture tiles, pitch padding does not help); uploads
+// must go through the staging buffer's aligned CopyBufferToTexture.
+#if defined(WINAPI_FAMILY) && WINAPI_FAMILY == WINAPI_FAMILY_APP
+inline constexpr bool UseTextureBuffer = true;
+#else
 inline constexpr bool UseTextureBuffer = false;
+#endif
 inline constexpr uint64_t UniformBufferSize = 25165824;  // 24mb
 inline constexpr uint64_t VertexBufferSize = 3145728;    // 3mb
 inline constexpr uint64_t IndexBufferSize = 2097152;     // 2mb

@@ -9,6 +9,7 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <cstring>
 #include <memory>
 #include <utility>
 
@@ -39,6 +40,24 @@ wgpu::Extent3D physical_size(wgpu::Extent3D size, TextureFormatInfo info) {
   const uint32_t width = ((size.width + info.blockWidth - 1) / info.blockWidth) * info.blockWidth;
   const uint32_t height = ((size.height + info.blockHeight - 1) / info.blockHeight) * info.blockHeight;
   return {.width = width, .height = height, .depthOrArrayLayers = size.depthOrArrayLayers};
+}
+
+// Xbox D3D12 mishandles WriteTexture with row strides that are not
+// 256-byte aligned; pad the rows ourselves so the queue sees an aligned pitch.
+std::vector<uint8_t> pad_upload_rows(const uint8_t* src, uint32_t bytesPerRow, uint32_t rowsPerImage,
+                                     uint32_t depthOrArrayLayers, uint32_t& uploadBytesPerRow) noexcept {
+  uploadBytesPerRow = AURORA_ALIGN(bytesPerRow, 256);
+  if (uploadBytesPerRow == bytesPerRow) {
+    return {};
+  }
+  std::vector<uint8_t> padded(size_t{uploadBytesPerRow} * rowsPerImage * depthOrArrayLayers);
+  for (uint32_t layer = 0; layer < depthOrArrayLayers; ++layer) {
+    for (uint32_t row = 0; row < rowsPerImage; ++row) {
+      std::memcpy(padded.data() + (size_t{layer} * rowsPerImage + row) * uploadBytesPerRow,
+                  src + (size_t{layer} * rowsPerImage + row) * bytesPerRow, bytesPerRow);
+    }
+  }
+  return padded;
 }
 } // namespace
 
@@ -131,11 +150,15 @@ TextureHandle new_static_texture_2d(uint32_t width, uint32_t height, uint32_t mi
       };
       g_textureUploads.emplace_back(dataLayout, std::move(dstView), physicalSize);
     } else {
+      uint32_t uploadBytesPerRow = bytesPerRow;
+      const auto padded =
+          pad_upload_rows(data.data() + offset, bytesPerRow, heightBlocks, mipSize.depthOrArrayLayers, uploadBytesPerRow);
       const wgpu::TexelCopyBufferLayout dataLayout{
-          .bytesPerRow = bytesPerRow,
+          .bytesPerRow = uploadBytesPerRow,
           .rowsPerImage = heightBlocks,
       };
-      g_queue.WriteTexture(&dstView, data.data() + offset, dataSize, &dataLayout, &physicalSize);
+      g_queue.WriteTexture(&dstView, padded.empty() ? data.data() + offset : padded.data(),
+                           padded.empty() ? dataSize : static_cast<uint32_t>(padded.size()), &dataLayout, &physicalSize);
     }
     offset += dataSize;
   }
@@ -288,11 +311,15 @@ void write_texture(TextureRef& ref, ArrayRef<uint8_t> data) noexcept {
       };
       g_textureUploads.emplace_back(dataLayout, std::move(dstView), physicalSize);
     } else {
+      uint32_t uploadBytesPerRow = bytesPerRow;
+      const auto padded =
+          pad_upload_rows(data.data() + offset, bytesPerRow, heightBlocks, mipSize.depthOrArrayLayers, uploadBytesPerRow);
       const wgpu::TexelCopyBufferLayout dataLayout{
-          .bytesPerRow = bytesPerRow,
+          .bytesPerRow = uploadBytesPerRow,
           .rowsPerImage = heightBlocks,
       };
-      g_queue.WriteTexture(&dstView, data.data() + offset, dataSize, &dataLayout, &physicalSize);
+      g_queue.WriteTexture(&dstView, padded.empty() ? data.data() + offset : padded.data(),
+                           padded.empty() ? dataSize : static_cast<uint32_t>(padded.size()), &dataLayout, &physicalSize);
     }
     offset += dataSize;
   }
