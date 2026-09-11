@@ -46,6 +46,7 @@ struct RuntimeUserConfig {
     std::optional<uint32_t> frameInterpolationFps;
     std::optional<bool> skipUnreadyPipelines;
     std::optional<bool> disableCopyFilter;
+    std::optional<bool> lytForcePacketPath;
     std::optional<bool> textureReplacements;
     std::optional<bool> textureDumps;
     std::optional<bool> showFps;
@@ -485,6 +486,7 @@ inline RuntimeUserConfig ParseConfigDocument(const toml::value& document) {
     }
     config.skipUnreadyPipelines = FindConfigValue<bool>(document, "video", "skip_unready_pipelines");
     config.disableCopyFilter = FindConfigValue<bool>(document, "video", "disable_copy_filter");
+    config.lytForcePacketPath = FindConfigValue<bool>(document, "video", "lyt_force_packet_path");
     config.showFps = FindConfigValue<bool>(document, "video", "show_fps");
     config.textureReplacements = FindConfigValue<bool>(document, "video", "texture_replacements");
     config.textureDumps = FindConfigValue<bool>(document, "video", "texture_dumps");
@@ -927,6 +929,12 @@ inline bool DisableCopyFilter(bool fallback = true) {
     return Get().disableCopyFilter.value_or(fallback);
 }
 
+// Debug bisect: route every nw4r::lyt quad through the generic display-list
+// packet path instead of the raw-bridge direct draw.
+inline bool LytForcePacketPath(bool fallback = false) {
+    return Get().lytForcePacketPath.value_or(fallback);
+}
+
 inline bool ShowFps(bool fallback = true) {
     return Get().showFps.value_or(fallback);
 }
@@ -1037,6 +1045,9 @@ inline void LogLoadedConfig() {
             }
             if (config.disableCopyFilter) {
                 std::cout << " disable_copy_filter=" << (*config.disableCopyFilter ? "true" : "false");
+            }
+            if (config.lytForcePacketPath) {
+                std::cout << " lyt_force_packet_path=" << (*config.lytForcePacketPath ? "true" : "false");
             }
             if (config.showFps) {
                 std::cout << " show_fps=" << (*config.showFps ? "true" : "false");

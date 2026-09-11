@@ -2,6 +2,7 @@
 #include "gx_stream_common.h"
 #include "gx_cp_decode.h"
 #include "isa/big_endian.h"
+#include "runtime_config.h"
 
 #include <cstdlib>
 #include <unordered_map>
@@ -177,6 +178,11 @@ static bool CanSubmitLytDrawDirect(int texCoordCount, const uint32_t* colors) {
 
 static bool SubmitLytDrawDirect(float x0, float y0, float x1, float y1, int texCoordCount,
                                 uint32_t texCoordAddr, const uint32_t* colors) {
+    // Bisect hook: video.lyt_force_packet_path forces every layout quad onto the
+    // generic display-list packet path so the raw bridge can be ruled in or out.
+    if (RuntimeConfigFile::LytForcePacketPath(false)) {
+        return false;
+    }
     if (!CanSubmitLytDrawDirect(texCoordCount, colors)) {
         return false;
     }
