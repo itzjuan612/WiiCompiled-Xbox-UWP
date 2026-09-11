@@ -179,11 +179,17 @@ public:
     return clone;
   }
 
+  // Diagnostic name surfaced if this buffer ever hits the non-owned resize
+  // abort in resize() below; sub-buffers of the mapped staging allocation are
+  // tagged in begin_frame_impl.
+  void set_tag(const char* tag) noexcept { m_tag = tag; }
+
 private:
   uint8_t* m_data = nullptr;
   size_t m_length = 0;
   size_t m_capacity = 0;
   bool m_owned = true;
+  const char* m_tag = nullptr;
 
   // `size` is the total capacity needed. When `zeroed` is set, [m_length, size) has to read back as
   // zero on every branch; the early return used to leave the previous frame's bytes in the padding.
@@ -206,6 +212,13 @@ private:
     }
     if (size > m_capacity) {
       if (!m_owned) {
+        // Diagnostic: never resize a non-owned buffer. Site is surfaced through
+        // stderr (captured in the run's console.log) before the abort.
+        std::fprintf(stderr,
+                     "[fatal-pre] silent abort site: aurora ByteBuffer resize on "
+                     "non-owned buffer (%s) (size=%zu capacity=%zu)\n",
+                     m_tag != nullptr ? m_tag : "untagged", size, m_capacity);
+        std::fflush(stderr);
         abort();
       }
       // Exponential expansion to avoid O(n^2) time complexity.
@@ -236,7 +249,10 @@ inline constexpr uint64_t UniformBufferSize = 25165824;  // 24mb
 inline constexpr uint64_t VertexBufferSize = 3145728;    // 3mb
 inline constexpr uint64_t IndexBufferSize = 2097152;     // 2mb
 inline constexpr uint64_t StorageBufferSize = 8388608;   // 8mb
-inline constexpr uint64_t TextureUploadSize = 25165824;  // 24mb
+// 64mb: the mapped range is a hard capacity (non-owned, cannot grow), and a
+// single frame of first-use texture uploads (WFC lobby / online race intro)
+// was observed to exceed the previous 24mb on Xbox, aborting in resize().
+inline constexpr uint64_t TextureUploadSize = 67108864;  // 64mb
 
 extern AuroraStats g_stats;
 extern uint32_t g_drawCallCount;
@@ -374,7 +390,12 @@ template <typename T>
 static Range push_storage(const T& data) {
   return push_storage(reinterpret_cast<const uint8_t*>(&data), sizeof(T));
 }
-Range push_texture_data(const uint8_t* data, size_t length, uint32_t bytesPerRow, uint32_t rowsPerImage);
+// Queue a texture data upload for the current frame's encode. Fast path writes
+// into the mapped staging region; when the frame's uploads exceed its fixed
+// capacity the data spills to CPU memory and is encoded at batch end via
+// Queue::WriteBuffer + CopyBufferToTexture, so oversized bursts cannot abort.
+void push_texture_upload(const uint8_t* data, uint32_t dataSize, uint32_t bytesPerRow, uint32_t rowsPerImage,
+                         const wgpu::TexelCopyTextureInfo& dstView, const wgpu::Extent3D& physicalSize);
 std::pair<ByteBuffer, Range> map_verts(size_t length);
 std::pair<ByteBuffer, Range> map_indices(size_t length);
 std::pair<ByteBuffer, Range> map_uniform(size_t length);

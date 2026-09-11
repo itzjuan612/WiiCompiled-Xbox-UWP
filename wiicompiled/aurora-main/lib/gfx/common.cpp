@@ -121,6 +121,20 @@ static ByteBuffer g_uniforms;
 static ByteBuffer g_indices;
 static ByteBuffer g_storage;
 static ByteBuffer g_textureUpload;
+// Texture uploads that no longer fit in the fixed mapped staging region for
+// the current frame. Held CPU-side (rows pre-padded to the CopyBufferToTexture
+// 256-byte row alignment) and encoded in end_batch_impl through a transient
+// CopySrc buffer written with Queue::WriteBuffer, followed by a normal
+// CopyBufferToTexture. This keeps oversized first-use upload bursts (WFC
+// lobby, online race intro) from aborting on the non-owned staging buffer.
+struct SpilledTextureUpload {
+  ByteBuffer data;
+  wgpu::TexelCopyTextureInfo tex;
+  wgpu::Extent3D size;
+  uint32_t bytesPerRow;
+  uint32_t rowsPerImage;
+};
+static std::vector<SpilledTextureUpload> g_spilledTextureUploads;
 wgpu::Buffer g_vertexBuffer;
 wgpu::Buffer g_uniformBuffer;
 wgpu::Buffer g_indexBuffer;
@@ -943,6 +957,7 @@ void shutdown() {
   gx::shutdown();
 
   g_textureUploads.clear();
+  g_spilledTextureUploads.clear();
   g_cachedBindGroups.clear();
   g_retiredBindGroups.clear();
   g_cachedSamplers.clear();
@@ -1033,6 +1048,15 @@ static bool begin_frame_impl(bool clearEfb) {
   if constexpr (UseTextureBuffer) {
     mapBuffer(g_textureUpload, TextureUploadSize);
   }
+  // The mapped sub-ranges are non-owned: an overflow cannot grow them, so tag
+  // each buffer for the non-owned-resize abort diagnostic.
+  g_verts.set_tag("verts");
+  g_uniforms.set_tag("uniforms");
+  g_indices.set_tag("indices");
+  g_storage.set_tag("storage");
+  if constexpr (UseTextureBuffer) {
+    g_textureUpload.set_tag("textureUpload");
+  }
 
   g_drawCallCount = 0;
   g_mergedDrawCallCount = 0;
@@ -1078,6 +1102,7 @@ void abort_frame() noexcept {
   if constexpr (UseTextureBuffer) {
     g_textureUploads.clear();
     g_textureUpload.release();
+    g_spilledTextureUploads.clear();
   }
   if (s_mappingState.load(std::memory_order_acquire) == BufferMapState::Mapped) {
     // Pending interpolation tasks hold raw pointers into the mapped staging
@@ -1146,6 +1171,30 @@ static void end_batch_impl(const wgpu::CommandEncoder& cmd, bool advanceFrame) {
       }
       g_textureUploads.clear();
       g_textureUpload.release();
+      // Spilled uploads: frames whose texture data exceeded the staging
+      // region. Queue::WriteBuffer is a plain byte copy (unlike WriteTexture,
+      // which mishandles texel rows on Xbox UWP), so the transient buffer is
+      // safe to fill directly and the copy uses the normal aligned path.
+      for (auto& item : g_spilledTextureUploads) {
+        const wgpu::BufferDescriptor spillBufferInfo{
+            .label = "Spilled Texture Upload",
+            .usage = wgpu::BufferUsage::CopySrc | wgpu::BufferUsage::CopyDst,
+            .size = static_cast<uint64_t>(item.data.size()),
+        };
+        auto spillBuffer = g_device.CreateBuffer(&spillBufferInfo);
+        g_queue.WriteBuffer(spillBuffer, 0, item.data.data(), item.data.size());
+        const wgpu::TexelCopyBufferInfo spillLayout{
+            .layout =
+                wgpu::TexelCopyBufferLayout{
+                    .offset = 0,
+                    .bytesPerRow = item.bytesPerRow,
+                    .rowsPerImage = item.rowsPerImage,
+                },
+            .buffer = spillBuffer,
+        };
+        cmd.CopyBufferToTexture(&spillLayout, &item.tex, &item.size);
+      }
+      g_spilledTextureUploads.clear();
     }
   }
   currentStagingBuffer = (currentStagingBuffer + 1) % g_stagingBuffers.size();
@@ -1532,7 +1581,7 @@ Range push_uniform(const uint8_t* data, size_t length) {
 Range push_storage(const uint8_t* data, size_t length) {
   return push(g_storage, data, length, g_cachedLimits.minStorageBufferOffsetAlignment);
 }
-Range push_texture_data(const uint8_t* data, size_t length, u32 bytesPerRow, u32 rowsPerImage) {
+static Range push_texture_data(const uint8_t* data, size_t length, u32 bytesPerRow, u32 rowsPerImage) {
   // For CopyBufferToTexture, we need an alignment of 256 per row (see Dawn kTextureBytesPerRowAlignment)
   const auto copyBytesPerRow = AURORA_ALIGN(bytesPerRow, 256);
   const auto range = map(g_textureUpload, copyBytesPerRow * rowsPerImage, 0);
@@ -1543,6 +1592,36 @@ Range push_texture_data(const uint8_t* data, size_t length, u32 bytesPerRow, u32
     dst += copyBytesPerRow;
   }
   return range;
+}
+void push_texture_upload(const uint8_t* data, uint32_t dataSize, uint32_t bytesPerRow, uint32_t rowsPerImage,
+                         const wgpu::TexelCopyTextureInfo& dstView, const wgpu::Extent3D& physicalSize) {
+  // For CopyBufferToTexture, we need an alignment of 256 per row (see Dawn kTextureBytesPerRowAlignment)
+  const auto copyBytesPerRow = AURORA_ALIGN(bytesPerRow, 256);
+  const size_t needed = static_cast<size_t>(copyBytesPerRow) * rowsPerImage;
+  if (g_textureUpload.size() + needed > TextureUploadSize) {
+    // The mapped staging region is a hard capacity (non-owned ByteBuffer that
+    // must never grow). Spill this upload to CPU memory; end_batch encodes it
+    // through a transient buffer written with Queue::WriteBuffer followed by a
+    // normal CopyBufferToTexture — the same copy primitive as the staging
+    // path, without the capacity limit.
+    ByteBuffer padded{needed};
+    u8* dst = padded.data();
+    for (u32 i = 0; i < rowsPerImage; ++i) {
+      memcpy(dst, data, bytesPerRow);
+      data += bytesPerRow;
+      dst += copyBytesPerRow;
+    }
+    g_spilledTextureUploads.push_back(
+        SpilledTextureUpload{std::move(padded), dstView, physicalSize, copyBytesPerRow, rowsPerImage});
+    return;
+  }
+  const auto range = push_texture_data(data, dataSize, bytesPerRow, rowsPerImage);
+  const wgpu::TexelCopyBufferLayout dataLayout{
+      .offset = range.offset,
+      .bytesPerRow = bytesPerRow,
+      .rowsPerImage = rowsPerImage,
+  };
+  g_textureUploads.emplace_back(dataLayout, std::move(dstView), physicalSize);
 }
 std::pair<ByteBuffer, Range> map_verts(size_t length) {
   const auto range = map(g_verts, length, 4);
