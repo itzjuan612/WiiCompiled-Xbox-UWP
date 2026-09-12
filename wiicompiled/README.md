@@ -133,6 +133,19 @@ executable.
 
 Wheel Wizard drives this too.
 
+> [!NOTE]
+> The packaged (Xbox / Windows app) build runs inside a sandbox and may only write inside its
+> own app data folder. Retro Rewind's `riivolution` save redirect writes *next to the pack*, so
+> a pack that lives outside app data is read-only to that build. Nothing has been saved there
+> yet and the redirect is skipped, keeping the save in the configured NAND; if the folder
+> already holds a save the build stops with an error naming it rather than silently abandoning
+> it. Fix it by moving the pack into the app's data folder, using the unpackaged desktop build,
+> or granting write access:
+>
+> ```powershell
+> icacls "<pack>\riivolution" /grant *S-1-15-2-1:(OI)(CI)M
+> ```
+
 ## Building from source
 
 Owning the game is still required even if you compile everything yourself.

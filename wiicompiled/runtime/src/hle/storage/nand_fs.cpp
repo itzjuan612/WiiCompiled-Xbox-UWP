@@ -196,6 +196,57 @@ struct RiivolutionSaveRedirect {
 static std::once_flag g_riivolutionSaveRedirectOnce;
 static RiivolutionSaveRedirect g_riivolutionSaveRedirect;
 
+// The redirect target has to actually take writes: packaged (Windows app) builds run in a
+// sandbox that denies everything outside the app data folder, and a save directory the guest
+// cannot create leaves it hanging on a blank scene with nothing but a soft warning in the log.
+static bool ProbeDirectoryWritable(const std::filesystem::path& directory) {
+    if (!CreateDirectoryPath(directory)) {
+        return false;
+    }
+
+    const std::filesystem::path probe = directory / ".mkw-save-probe.tmp";
+    std::ofstream out(probe, std::ios::binary | std::ios::trunc);
+    if (!out) {
+        return false;
+    }
+    out.put('\0');
+    out.flush();
+    const bool written = static_cast<bool>(out);
+    out.close();
+
+    std::error_code ec;
+    std::filesystem::remove(probe, ec);
+    return written;
+}
+
+// Deepest existing ancestor: the folder that has to gain the write grant for the target to
+// ever become usable.
+static std::filesystem::path FirstExistingAncestor(const std::filesystem::path& path) {
+    std::filesystem::path ancestor = path.parent_path();
+    while (!ancestor.empty() && !PathExists(ancestor)) {
+        ancestor = ancestor.parent_path();
+    }
+    return ancestor.empty() ? path : ancestor;
+}
+
+[[noreturn]] static void FailUnwritableSaveRedirect(const std::filesystem::path& directory) {
+    std::string details = "Retro Rewind's save folder is not writable:\n\n";
+    details += HostPathText(directory);
+    details += "\n\nA packaged build may only write inside its own app data folder. Run the "
+               "unpackaged (desktop) build, move the Retro Rewind pack somewhere writable, or "
+               "grant write access to the folder that holds it:";
+    details += "\n\n  icacls \"";
+    details += HostPathText(FirstExistingAncestor(directory));
+    details += "\" /grant *S-1-15-2-1:(OI)(CI)M";
+
+    // Same idiom as the NAND/DVD init failures: artifacts, exit code, popup, then bail.
+    RuntimeCrash::WriteCrashArtifacts("savegame_redirect", details);
+    SetRuntimeExitCode(EXIT_FAILURE);
+    ShowRuntimeFatalPopup("the Retro Rewind save folder could not be written to", details);
+    MarkFatalErrorReported();
+    std::exit(EXIT_FAILURE);
+}
+
 static const RiivolutionSaveRedirect& GetRiivolutionSaveRedirect() {
     // The active pack's <savegame> patch, resolved against the virtual SD root
     // exactly like Dolphin resolves it for Riivolution launches. This keeps
@@ -206,11 +257,27 @@ static const RiivolutionSaveRedirect& GetRiivolutionSaveRedirect() {
         if (!redirect) {
             return;
         }
+
+        if (!ProbeDirectoryWritable(redirect->hostDirectory)) {
+            // An existing external save *is* the data; silently switching to the in-NAND copy
+            // would fork the license in two, so refuse instead. Nothing there yet means the
+            // redirect simply has not been provisioned, and the NAND save is the real one.
+            std::error_code ec;
+            if (IsDirectory(redirect->hostDirectory) &&
+                !std::filesystem::is_empty(redirect->hostDirectory, ec) && !ec) {
+                FailUnwritableSaveRedirect(redirect->hostDirectory);
+            }
+
+            LogNandWarning("RiivolutionSave",
+                           "savegame redirect target '%s' is not writable; keeping the save in "
+                           "the configured NAND",
+                           HostPathText(redirect->hostDirectory).c_str());
+            return;
+        }
+
         g_riivolutionSaveRedirect.enabled = true;
         g_riivolutionSaveRedirect.clone = redirect->clone;
         g_riivolutionSaveRedirect.hostDirectory = redirect->hostDirectory;
-        // Riivolution creates the redirect folder if it does not exist.
-        CreateDirectoryPath(g_riivolutionSaveRedirect.hostDirectory);
     });
 
     return g_riivolutionSaveRedirect;
