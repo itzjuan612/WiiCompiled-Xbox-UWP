@@ -65,6 +65,25 @@ static wgpu::TextureFormat g_presentSourceOverrideFormat = wgpu::TextureFormat::
 static wgpu::Adapter g_adapter;
 wgpu::Instance g_instance;
 static wgpu::AdapterInfo g_adapterInfo;
+
+// The Xbox D3D12 driver (SraKmd) is the one that tears the device down when a compiled
+// pipeline state gets serialized, and the one that runs the whole box on memory shared
+// between CPU and GPU. Both workarounds key off the adapter instead of off the UWP binary:
+// a packaged build on a desktop GPU has neither problem, and paying the console's price
+// there throws away seconds of shader compilation on every single launch.
+static std::atomic_bool g_xboxD3D12Driver{false};
+
+bool is_xbox_d3d12_driver() noexcept {
+  return g_xboxD3D12Driver.load(std::memory_order_relaxed);
+}
+
+static bool adapter_name_contains(const wgpu::StringView& name, std::string_view needle) {
+  if (name.IsUndefined() || name.data == nullptr) {
+    return false;
+  }
+  const size_t length = name.length == wgpu::kStrlen ? std::strlen(name.data) : name.length;
+  return std::string_view{name.data, length}.find(needle) != std::string_view::npos;
+}
 static wgpu::SurfaceCapabilities g_surfaceCapabilities;
 bool g_bcTexturesSupported;
 // Written by Dawn's device-loss callback and consumed at ordered frame boundaries. Keep the
@@ -596,6 +615,7 @@ bool initialize(AuroraBackend auroraBackend) {
   }
   Log.info("Graphics adapter information\n  API: {}\n  Device: {} ({})\n  Driver: {}", backendName, adapterName,
            magic_enum::enum_name(g_adapterInfo.adapterType), description);
+  g_xboxD3D12Driver.store(adapter_name_contains(adapterName, "SraKmd"), std::memory_order_relaxed);
 
   uint32_t maxTextureDimension2D = 0;
   {
@@ -689,12 +709,15 @@ bool initialize(AuroraBackend auroraBackend) {
     if (g_backendType == wgpu::BackendType::Vulkan) {
       enableToggles.push_back("vulkan_monolithic_pipeline_cache");
     }
-#if defined(_WIN32) && defined(WINAPI_FAMILY) && (WINAPI_FAMILY == WINAPI_FAMILY_APP)
+#if _WIN32
     // The Xbox (SraKmd) D3D12 driver tears the device down as a side effect of serializing a
     // pipeline state via ID3D12PipelineState::GetCachedBlob, even though the pipeline was
     // created successfully. Disable the persistent blob cache there so Dawn never makes that
-    // call.
-    enableToggles.push_back("disable_blob_cache");
+    // call. Every other driver, packaged builds included, keeps it: without it each launch
+    // re-compiles every pipeline from source instead of restoring the driver's own blob.
+    if (is_xbox_d3d12_driver()) {
+      enableToggles.push_back("disable_blob_cache");
+    }
 #endif
     const wgpu::DawnTogglesDescriptor togglesDescriptor({
         .nextInChain = &cacheDescriptor,

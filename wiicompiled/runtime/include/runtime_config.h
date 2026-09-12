@@ -47,6 +47,7 @@ struct RuntimeUserConfig {
     std::optional<bool> skipUnreadyPipelines;
     std::optional<bool> disableCopyFilter;
     std::optional<bool> lytForcePacketPath;
+    std::optional<uint32_t> pipelineCompileWorkers;
     std::optional<bool> textureReplacements;
     std::optional<bool> textureDumps;
     std::optional<bool> showFps;
@@ -487,6 +488,7 @@ inline RuntimeUserConfig ParseConfigDocument(const toml::value& document) {
     config.skipUnreadyPipelines = FindConfigValue<bool>(document, "video", "skip_unready_pipelines");
     config.disableCopyFilter = FindConfigValue<bool>(document, "video", "disable_copy_filter");
     config.lytForcePacketPath = FindConfigValue<bool>(document, "video", "lyt_force_packet_path");
+    config.pipelineCompileWorkers = FindConfigUint(document, "video", "pipeline_compile_workers");
     config.showFps = FindConfigValue<bool>(document, "video", "show_fps");
     config.textureReplacements = FindConfigValue<bool>(document, "video", "texture_replacements");
     config.textureDumps = FindConfigValue<bool>(document, "video", "texture_dumps");
@@ -935,6 +937,12 @@ inline bool LytForcePacketPath(bool fallback = false) {
     return Get().lytForcePacketPath.value_or(fallback);
 }
 
+// Threads compiling graphics pipelines at once. Zero (the default) lets the renderer pick
+// per driver: one where shaders compile against shared CPU/GPU memory, the full pool elsewhere.
+inline uint32_t PipelineCompileWorkers(uint32_t fallback = 0) {
+    return Get().pipelineCompileWorkers.value_or(fallback);
+}
+
 inline bool ShowFps(bool fallback = true) {
     return Get().showFps.value_or(fallback);
 }
@@ -1048,6 +1056,9 @@ inline void LogLoadedConfig() {
             }
             if (config.lytForcePacketPath) {
                 std::cout << " lyt_force_packet_path=" << (*config.lytForcePacketPath ? "true" : "false");
+            }
+            if (config.pipelineCompileWorkers) {
+                std::cout << " pipeline_compile_workers=" << *config.pipelineCompileWorkers;
             }
             if (config.showFps) {
                 std::cout << " show_fps=" << (*config.showFps ? "true" : "false");

@@ -125,6 +125,11 @@ typedef struct {
   // Optional directory for the portable GX pipeline database. When null, the
   // database is stored in cachePath with Dawn's machine-specific cache.
   const char* pipelineCachePath;
+
+  // Threads compiling graphics pipelines at once. Zero selects the platform default: one on
+  // the Xbox driver, which compiles against shared CPU/GPU memory, and the full worker pool
+  // on anything else.
+  uint32_t pipelineCompileWorkers;
 } AuroraConfig;
 
 typedef struct {

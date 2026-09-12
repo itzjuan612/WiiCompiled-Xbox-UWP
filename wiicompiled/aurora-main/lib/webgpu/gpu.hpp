@@ -87,6 +87,10 @@ size_t load_from_cache(void const* key, size_t keySize, void* value, size_t valu
 void store_to_cache(void const* key, size_t keySize, void const* value, size_t valueSize, void* userdata);
 void cache_shutdown();
 
+// True once the selected D3D12 adapter has been identified as the Xbox (SraKmd) driver.
+// False on every other driver and before the adapter has been chosen.
+bool is_xbox_d3d12_driver() noexcept;
+
 struct BlobCacheStats {
   uint64_t lookups;
   uint64_t hits;

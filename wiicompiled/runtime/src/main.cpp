@@ -1483,6 +1483,7 @@ int RuntimeMain(int argc, char** argv) {
             auroraConfig.windowPosX, auroraConfig.windowPosY);
         auroraConfig.allowJoystickBackgroundEvents = true;
         auroraConfig.disableCopyFilter = RuntimeConfigFile::DisableCopyFilter(true);
+        auroraConfig.pipelineCompileWorkers = RuntimeConfigFile::PipelineCompileWorkers(0);
         // Dolphin-style custom textures. Aurora indexes <userPath>/texture_replacements
         // once during aurora_initialize, so both knobs only take effect on the next launch.
         // Dumps name each unmatched texture the way its replacement would have to be named,

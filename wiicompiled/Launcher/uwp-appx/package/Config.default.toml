@@ -8,6 +8,11 @@ frame_interpolation_fps = 120
 display_mode = "windowed"
 graphics_api = "auto"
 skip_unready_pipelines = true
+# Threads compiling graphics pipelines at once. 0 (or leaving this out) picks
+# the driver default: one on the Xbox, where shader compiles allocate from
+# memory shared with the GPU, and one per available core elsewhere. Raise it
+# on Xbox to trade memory headroom for a shorter prewarm.
+# pipeline_compile_workers = 0
 disable_copy_filter = true
 show_fps = true
 # Dolphin-style custom textures. When enabled, the renderer indexes

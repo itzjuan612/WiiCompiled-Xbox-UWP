@@ -1045,21 +1045,22 @@ static size_t pipeline_worker_count() {
   if (logicalProcessors == 0) {
     return 1;
   }
-#if defined(_WIN32) && defined(WINAPI_FAMILY) && (WINAPI_FAMILY == WINAPI_FAMILY_APP)
-  // Xbox shares its memory between the CPU and GPU and runs close to the ceiling. The D3D12
-  // backend compiles shaders with legacy FXC in-process, and each concurrent compile makes a
-  // large transient allocation; a burst of first-use pipelines during a race would exhaust the
-  // remaining budget and fail with E_OUTOFMEMORY. A single worker keeps at most one FXC
-  // transient allocation alive at a time, which is the largest lever available here.
-  constexpr size_t kXboxMaxPipelineWorkers = 1;
   const size_t availableWorkers =
       logicalProcessors > ReservedLogicalProcessors ? logicalProcessors - ReservedLogicalProcessors : 1;
-  return std::clamp(availableWorkers, size_t{1}, kXboxMaxPipelineWorkers);
-#else
-  const size_t availableWorkers =
-      logicalProcessors > ReservedLogicalProcessors ? logicalProcessors - ReservedLogicalProcessors : 1;
+  // An explicit [video] pipeline_compile_workers always wins, so the memory/latency
+  // trade-off can be re-tuned on a device without another build.
+  if (g_config.pipelineCompileWorkers > 0) {
+    return std::clamp<size_t>(g_config.pipelineCompileWorkers, 1, MaxPipelineWorkers);
+  }
+  if (webgpu::is_xbox_d3d12_driver()) {
+    // Xbox shares its memory between the CPU and GPU and runs close to the ceiling. The D3D12
+    // backend compiles shaders in-process, and each concurrent compile makes a large transient
+    // allocation; a burst of first-use pipelines during a race would exhaust the remaining
+    // budget and fail with E_OUTOFMEMORY. A single worker keeps at most one transient
+    // allocation alive at a time, which is the largest lever available there.
+    return 1;
+  }
   return std::clamp(availableWorkers, size_t{1}, MaxPipelineWorkers);
-#endif
 }
 
 template <typename PipelineConfig, typename CreateFn>
