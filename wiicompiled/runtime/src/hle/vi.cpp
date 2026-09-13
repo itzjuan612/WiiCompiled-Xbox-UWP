@@ -525,6 +525,13 @@ void VI_HLE_PresentFrame(bool presentedXfb, bool paceToRetrace) {
         ~SequenceGuard() { s_presentSequenceActive.store(false, std::memory_order_release); }
     } sequenceGuard;
     const Clock::time_point presentStarted = Clock::now();
+    // Track the tightest memory margin seen this session, sampled every present so a brief dip
+    // during a crowded scene is not missed between the (every-300-frame) diag reports.
+    const uint64_t freeMemoryNow = aurora_available_physical_memory();
+    static uint64_t s_lowestFreeMemory = UINT64_MAX;
+    if (freeMemoryNow < s_lowestFreeMemory) {
+        s_lowestFreeMemory = freeMemoryNow;
+    }
     Clock::time_point paceDeadline{};
     bool paceThisFrame = false;
     if (paceToRetrace) {
@@ -694,7 +701,8 @@ void VI_HLE_PresentFrame(bool presentedXfb, bool paceToRetrace) {
                           << " drains=" << fifoDrains << '/' << msOf(fifoDrainUs, measuredFrames) << "ms"
                           << " rawdraws=" << rawDraws << '/' << msOf(rawDrawUs, measuredFrames) << "ms"
                           << "(lock " << msOf(rawDrawLockUs, measuredFrames) << "ms)"
-                          << " readbacks=" << readbacks << '/' << msOf(readbackUs, measuredFrames) << "ms";
+                          << " readbacks=" << readbacks << '/' << msOf(readbackUs, measuredFrames) << "ms"
+                          << " memfree=" << (freeMemoryNow >> 20) << "MB memmin=" << (s_lowestFreeMemory >> 20) << "MB";
         // Spills are rare by design, so only say something when this window saw one: it is the
         // signature of a screen whose texture burst does not fit the staging region.
         static uint64_t s_lastSpilledUploads = 0;

@@ -83,6 +83,10 @@ typedef struct {
 const AuroraStats* aurora_get_stats();
 void aurora_get_present_timing(AuroraPresentTiming* timing);
 
+// Free bytes left in the app's memory budget (GlobalMemoryStatusEx ullAvailPhys). On Xbox UWP this
+// is the remaining app target, so it reads as the margin before the OS/allocator starts failing.
+uint64_t aurora_available_physical_memory();
+
 // Interpolation health: the per-frame fields describe the last sealed frame, the counters
 // accumulate since it was configured. This answers "output FPS dropped but the game held 60".
 typedef struct {

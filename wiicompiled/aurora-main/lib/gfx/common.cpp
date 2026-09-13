@@ -1731,3 +1731,5 @@ void aurora_pop_debug_group() {
 }
 
 const AuroraStats* aurora_get_stats() { return &aurora::gfx::g_stats; }
+
+uint64_t aurora_available_physical_memory() { return aurora::webgpu::available_physical_memory(); }
