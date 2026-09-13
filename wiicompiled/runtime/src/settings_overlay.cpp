@@ -983,9 +983,9 @@ void DrawTopBar() {
         ImGui::EndMenu();
     }
 
-    const float hideWidth = ImGui::CalcTextSize("Hide (F10)").x + ImGui::GetStyle().FramePadding.x * 2.0f;
+    const float hideWidth = ImGui::CalcTextSize("Hide (F10 / LB+RB+Y)").x + ImGui::GetStyle().FramePadding.x * 2.0f;
     ImGui::SetCursorPosX(std::max(ImGui::GetCursorPosX(), ImGui::GetWindowWidth() - hideWidth - 8.0f));
-    if (ImGui::MenuItem("Hide (F10)")) {
+    if (ImGui::MenuItem("Hide (F10 / LB+RB+Y)")) {
         SetTopBarVisible(false);
     }
     ImGui::EndMainMenuBar();
@@ -993,6 +993,30 @@ void DrawTopBar() {
 
 bool IsToggleKey(const SDL_Event& event, SDL_Scancode code) {
     return event.type == SDL_EVENT_KEY_DOWN && !event.key.repeat && event.key.scancode == code;
+}
+
+// Host-side gamepad toggle chord: LB+RB+Y. POLLED from live gamepad state (not read off a single
+// button event) so a chord whose three buttons land on different frames is still recognised on the
+// frame the last one is held. NORTH is SDL's positional name for the top face button, i.e. Y on an
+// Xbox pad. Any connected gamepad counts, so it works on the controller the player actually holds.
+bool GamepadToggleComboHeld() {
+    int count = 0;
+    SDL_JoystickID* ids = SDL_GetGamepads(&count);
+    bool held = false;
+    for (int i = 0; i < count; ++i) {
+        SDL_Gamepad* pad = SDL_GetGamepadFromID(ids[i]);
+        if (pad == nullptr) {
+            continue;
+        }
+        if (SDL_GetGamepadButton(pad, SDL_GAMEPAD_BUTTON_LEFT_SHOULDER) &&
+            SDL_GetGamepadButton(pad, SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER) &&
+            SDL_GetGamepadButton(pad, SDL_GAMEPAD_BUTTON_NORTH)) {
+            held = true;
+            break;
+        }
+    }
+    SDL_free(ids);
+    return held;
 }
 
 bool IsMouseActivity(const SDL_Event& event) {
@@ -1063,6 +1087,16 @@ void InitializeRuntimeSettings() noexcept {
 }
 
 void HandleEvents(const AuroraEvent* events) noexcept {
+    // Gamepad chord toggle (LB+RB+Y), rising edge so holding the combo does not flap the menu.
+    // Suppressed while the mapping wizard is capturing presses, so the chord is not eaten as a bind.
+    // Runs before the event-batch check: a button press always produces an event, so this is reached
+    // on the frame the chord completes even when only controller events are queued.
+    static bool s_gamepadComboHeld = false;
+    const bool comboHeld = GamepadToggleComboHeld();
+    if (comboHeld && !s_gamepadComboHeld && !controller_mapping_wizard::IsActive()) {
+        SetTopBarVisible(!g_topBarVisible);
+    }
+    s_gamepadComboHeld = comboHeld;
     if (!events) {
         return;
     }
@@ -1101,8 +1135,9 @@ void Draw() noexcept {
     DrawFpsOverlay();
     DrawTopBar();
     controller_mapping_wizard::Draw();
-    // The wizard captures raw presses; keep them out of the game.
-    const bool inputBlocked = controller_mapping_wizard::IsActive();
+    // The wizard captures raw presses; keep them out of the game. While the settings menu is open,
+    // the controller drives the menu, so its input must not also reach the guest.
+    const bool inputBlocked = controller_mapping_wizard::IsActive() || g_topBarVisible;
     PADBlockInput(inputBlocked);
     InputBindings::SetInputBlocked(inputBlocked);
     DrawStartupScreen();
