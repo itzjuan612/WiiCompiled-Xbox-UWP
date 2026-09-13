@@ -168,6 +168,12 @@ void new_frame(const AuroraWindowSize& size) noexcept {
   ImGuiIO& io = ImGui::GetIO();
   io.DisplayFramebufferScale = framebufferScale;
   ImGui::GetIO().DisplaySize = displaySize;
+  // The winrt SDL driver used by the packaged (UWP/Xbox) build never establishes OS keyboard focus
+  // for the CoreWindow, so the SDL3 backend forwards a FOCUS_LOST that makes ImGui clear every
+  // keyboard and mouse event at the top of NewFrame (io.AppFocusLost -> ClearInputKeys/ClearInputMouse),
+  // which disables the whole overlay. A full-screen game always owns the controller, so assert focus
+  // each frame; the desktop HWND build is already focused, so this is a no-op there.
+  io.AddFocusEvent(true);
   ImGui::NewFrame();
   g_frameDataBuilt = false;
 }

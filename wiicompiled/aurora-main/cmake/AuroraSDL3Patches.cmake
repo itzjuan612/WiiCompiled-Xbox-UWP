@@ -118,6 +118,38 @@ static void UpdateDeviceIdentity(SDL_HIDAPI_Device *device)
 
     now = SDL_GetTicks();
 ]==])
+
+  # WinRT pointer input: correct the mouse-button argument order.
+  #
+  # The SternXD SDL3-uwp fork carries this video driver, which the UWP (Xbox) and
+  # packaged-Windows builds compile. Its pointer handlers still call
+  # SDL_SendMouseButton with the SDL2 argument order (state, button), but SDL3's
+  # prototype is (..., Uint8 button, bool down) (src/events/SDL_mouse_c.h). The
+  # call sites therefore send the button index in the "down" slot and the press
+  # flag in the "button" slot, so a left click posts an ignored button-0 press
+  # followed by a spurious left-button press with no release: Dear ImGui latches
+  # the left button down forever and the settings overlay stops responding to the
+  # mouse (the pointer itself tracks, because SDL_SendMouseMotion's arguments are
+  # already in the SDL3 order). Pass the arguments in the correct order.
+  #
+  # Guarded on the fork's exact buggy text so the upstream desktop SDL tree (which
+  # already calls it correctly, with different surrounding code) is left untouched
+  # instead of tripping _aurora_sdl3_replace's "does not apply" error.
+  set(_winrt_pointer "${sdl_source_dir}/src/video/winrt/SDL_winrtpointerinput.cpp")
+  if (EXISTS "${_winrt_pointer}")
+    file(READ "${_winrt_pointer}" _winrt_pointer_content)
+    if ("${_winrt_pointer_content}" MATCHES "SDL_SendMouseButton\\(0, window, SDL_DEFAULT_MOUSE_ID, 0, button\\)")
+      _aurora_sdl3_replace("${_winrt_pointer}" "WinRT pointer mouse-button argument order (press)"
+[==[SDL_SendMouseButton(0, window, SDL_DEFAULT_MOUSE_ID, 0, button);]==]
+[==[SDL_SendMouseButton(0, window, SDL_DEFAULT_MOUSE_ID, button, true);]==])
+      _aurora_sdl3_replace("${_winrt_pointer}" "WinRT pointer mouse-button argument order (release)"
+[==[SDL_SendMouseButton(0, window, SDL_DEFAULT_MOUSE_ID, 1, button);]==]
+[==[SDL_SendMouseButton(0, window, SDL_DEFAULT_MOUSE_ID, button, false);]==])
+      _aurora_sdl3_replace("${_winrt_pointer}" "WinRT pointer mouse-button argument order (moved)"
+[==[SDL_SendMouseButton(0, window, SDL_DEFAULT_MOUSE_ID, pressed, button);]==]
+[==[SDL_SendMouseButton(0, window, SDL_DEFAULT_MOUSE_ID, button, pressed);]==])
+    endif ()
+  endif ()
 endfunction()
 
 # Script mode (FetchContent PATCH_COMMAND).
