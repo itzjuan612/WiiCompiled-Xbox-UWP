@@ -48,6 +48,7 @@ struct RuntimeUserConfig {
     std::optional<bool> disableCopyFilter;
     std::optional<bool> lytForcePacketPath;
     std::optional<uint32_t> pipelineCompileWorkers;
+    std::optional<std::string> overlayHotkey;
     std::optional<bool> textureReplacements;
     std::optional<bool> textureDumps;
     std::optional<bool> showFps;
@@ -337,6 +338,11 @@ inline void EnsureConfigFile() {
               "skip_unready_pipelines = true\n"
               "disable_copy_filter = true\n"
               "show_fps = true\n"
+              "# Gamepad chord that opens the settings overlay: native button names\n"
+              "# (left_shoulder, north, dpad_up, start, ...) joined by '+' - aliases\n"
+              "# like \"LB+RB+Y\" also work. \"none\" disables the chord (F10 and the\n"
+              "# mouse still open it). Read once, at startup.\n"
+              "# overlay_hotkey = \"LB+RB+Y\"\n"
               "# Dolphin-style custom textures. When enabled, the renderer indexes\n"
               "# texture_replacements/ next to this file at startup and substitutes\n"
               "# any tex1_<W>x<H>_<hash>[_<tlut hash>]_<format>.dds or .png it finds\n"
@@ -489,6 +495,7 @@ inline RuntimeUserConfig ParseConfigDocument(const toml::value& document) {
     config.disableCopyFilter = FindConfigValue<bool>(document, "video", "disable_copy_filter");
     config.lytForcePacketPath = FindConfigValue<bool>(document, "video", "lyt_force_packet_path");
     config.pipelineCompileWorkers = FindConfigUint(document, "video", "pipeline_compile_workers");
+    config.overlayHotkey = FindConfigValue<std::string>(document, "video", "overlay_hotkey");
     config.showFps = FindConfigValue<bool>(document, "video", "show_fps");
     config.textureReplacements = FindConfigValue<bool>(document, "video", "texture_replacements");
     config.textureDumps = FindConfigValue<bool>(document, "video", "texture_dumps");
@@ -537,10 +544,24 @@ inline RuntimeUserConfig ParseConfigDocument(const toml::value& document) {
     return config;
 }
 
+// A parse failure discards the whole document (every value silently falls back to
+// a built-in default), which otherwise surfaces far later as an unrelated error
+// such as "No DVD root is configured". Keep the parser's own message - toml++
+// names the exact file, line and column - so startup can report the real cause.
+inline std::string& ConfigParseError() {
+    static std::string error;
+    return error;
+}
+
+inline bool ConfigParseFailed() {
+    return !ConfigParseError().empty();
+}
+
 inline RuntimeUserConfig ParseConfig(std::istream& input, std::string sourceName = "Config.toml") {
     try {
         return ParseConfigDocument(toml::parse(input, std::move(sourceName)));
     } catch (const std::exception& exception) {
+        ConfigParseError() = exception.what() != nullptr ? exception.what() : "invalid TOML";
         std::cerr << "[runtime-config] Invalid TOML; using built-in defaults: "
                   << exception.what() << std::endl;
         return {};
@@ -969,6 +990,10 @@ inline std::string DisplayMode(std::string fallback = "windowed") {
     return Get().displayMode.value_or(std::move(fallback));
 }
 
+inline std::string OverlayHotkey(std::string fallback = "left_shoulder+right_shoulder+north") {
+    return Get().overlayHotkey.value_or(std::move(fallback));
+}
+
 inline bool NetworkEnabled(bool fallback = true) {
     return Get().networkEnabled.value_or(fallback);
 }
@@ -1027,6 +1052,8 @@ inline void LogLoadedConfig() {
         std::cout << "[runtime-config] " << PathToUtf8(configPath);
         if (!std::filesystem::exists(configPath)) {
             std::cout << " not found; using built-in defaults";
+        } else if (ConfigParseFailed()) {
+            std::cout << " present but INVALID; fell back to built-in defaults";
         } else {
             std::cout << " loaded";
             if (config.widescreen) {
@@ -1059,6 +1086,9 @@ inline void LogLoadedConfig() {
             }
             if (config.pipelineCompileWorkers) {
                 std::cout << " pipeline_compile_workers=" << *config.pipelineCompileWorkers;
+            }
+            if (config.overlayHotkey) {
+                std::cout << " overlay_hotkey=\"" << *config.overlayHotkey << "\"";
             }
             if (config.showFps) {
                 std::cout << " show_fps=" << (*config.showFps ? "true" : "false");

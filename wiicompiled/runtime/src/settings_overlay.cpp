@@ -28,6 +28,7 @@
 #include <string>
 #include <string_view>
 #include <utility>
+#include <vector>
 
 #if defined(_WIN32)
 #define WIN32_LEAN_AND_MEAN
@@ -935,6 +936,127 @@ void DrawStartupScreen() {
     ImGui::PopStyleColor();
 }
 
+// Turns one Config.toml token into a host-pad button. Accepts the same positional
+// names the controller wizard uses ("north", "left_shoulder", ...) via the shared
+// ControllerNames table, plus a few Xbox-friendly aliases so a player can write
+// "LB+RB+Y" without looking anything up. Returns INVALID for anything unknown, so a
+// typo drops just that button, matching the rest of the config vocabulary.
+SDL_GamepadButton ResolveHotkeyToken(std::string_view token) {
+    struct Alias {
+        std::string_view name;
+        SDL_GamepadButton button;
+    };
+    static constexpr Alias kAliases[] = {
+        {"a", SDL_GAMEPAD_BUTTON_SOUTH},
+        {"b", SDL_GAMEPAD_BUTTON_EAST},
+        {"x", SDL_GAMEPAD_BUTTON_WEST},
+        {"y", SDL_GAMEPAD_BUTTON_NORTH},
+        {"lb", SDL_GAMEPAD_BUTTON_LEFT_SHOULDER},
+        {"rb", SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER},
+        {"l1", SDL_GAMEPAD_BUTTON_LEFT_SHOULDER},
+        {"r1", SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER},
+        {"back", SDL_GAMEPAD_BUTTON_BACK},
+        {"select", SDL_GAMEPAD_BUTTON_BACK},
+        {"start", SDL_GAMEPAD_BUTTON_START},
+        {"menu", SDL_GAMEPAD_BUTTON_START},
+        {"guide", SDL_GAMEPAD_BUTTON_GUIDE},
+        {"l3", SDL_GAMEPAD_BUTTON_LEFT_STICK},
+        {"r3", SDL_GAMEPAD_BUTTON_RIGHT_STICK},
+        {"up", SDL_GAMEPAD_BUTTON_DPAD_UP},
+        {"down", SDL_GAMEPAD_BUTTON_DPAD_DOWN},
+        {"left", SDL_GAMEPAD_BUTTON_DPAD_LEFT},
+        {"right", SDL_GAMEPAD_BUTTON_DPAD_RIGHT},
+    };
+    for (const Alias& alias : kAliases) {
+        if (token == alias.name) {
+            return alias.button;
+        }
+    }
+    if (const ControllerNames::NativeButtonItem* item = ControllerNames::FindNativeButton(token)) {
+        if (item->nativeButton != PAD_NATIVE_BUTTON_INVALID) {
+            return static_cast<SDL_GamepadButton>(item->nativeButton);
+        }
+    }
+    return SDL_GAMEPAD_BUTTON_INVALID;
+}
+
+// Parses the '+'-joined overlay_hotkey string. Case-insensitive, tolerates spaces, and
+// treats "none"/"off"/empty as "no gamepad chord" (F10 and the mouse still open the menu).
+std::vector<SDL_GamepadButton> ParseOverlayHotkey(std::string_view spec) {
+    std::vector<SDL_GamepadButton> buttons;
+    size_t begin = 0;
+    while (begin <= spec.size()) {
+        const size_t plus = spec.find('+', begin);
+        const std::string_view raw =
+            spec.substr(begin, plus == std::string_view::npos ? std::string_view::npos : plus - begin);
+        std::string token;
+        token.reserve(raw.size());
+        for (char c : raw) {
+            token += static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+        }
+        token = ControllerNames::TrimToken(token);
+        if (token == "none" || token == "off" || token == "disabled") {
+            return {};
+        }
+        if (!token.empty()) {
+            const SDL_GamepadButton button = ResolveHotkeyToken(token);
+            if (button != SDL_GAMEPAD_BUTTON_INVALID &&
+                std::find(buttons.begin(), buttons.end(), button) == buttons.end()) {
+                buttons.push_back(button);
+            }
+        }
+        if (plus == std::string_view::npos) {
+            break;
+        }
+        begin = plus + 1;
+    }
+    return buttons;
+}
+
+const std::vector<SDL_GamepadButton>& OverlayHotkeyButtons() {
+    static const std::vector<SDL_GamepadButton> buttons =
+        ParseOverlayHotkey(RuntimeConfigFile::OverlayHotkey());
+    return buttons;
+}
+
+const char* HotkeyButtonShortName(SDL_GamepadButton button) {
+    switch (button) {
+    case SDL_GAMEPAD_BUTTON_SOUTH: return "A";
+    case SDL_GAMEPAD_BUTTON_EAST: return "B";
+    case SDL_GAMEPAD_BUTTON_WEST: return "X";
+    case SDL_GAMEPAD_BUTTON_NORTH: return "Y";
+    case SDL_GAMEPAD_BUTTON_LEFT_SHOULDER: return "LB";
+    case SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER: return "RB";
+    case SDL_GAMEPAD_BUTTON_BACK: return "Back";
+    case SDL_GAMEPAD_BUTTON_GUIDE: return "Guide";
+    case SDL_GAMEPAD_BUTTON_START: return "Start";
+    case SDL_GAMEPAD_BUTTON_LEFT_STICK: return "L3";
+    case SDL_GAMEPAD_BUTTON_RIGHT_STICK: return "R3";
+    case SDL_GAMEPAD_BUTTON_DPAD_UP: return "Up";
+    case SDL_GAMEPAD_BUTTON_DPAD_DOWN: return "Down";
+    case SDL_GAMEPAD_BUTTON_DPAD_LEFT: return "Left";
+    case SDL_GAMEPAD_BUTTON_DPAD_RIGHT: return "Right";
+    default: {
+        const char* name = SDL_GetGamepadStringForButton(button);
+        return name != nullptr ? name : "?";
+    }
+    }
+}
+
+const std::string& OverlayHotkeyLabel() {
+    static const std::string label = [] {
+        std::string out;
+        for (SDL_GamepadButton button : OverlayHotkeyButtons()) {
+            if (!out.empty()) {
+                out += "+";
+            }
+            out += HotkeyButtonShortName(button);
+        }
+        return out;
+    }();
+    return label;
+}
+
 void DrawTopBar() {
     if (!g_topBarVisible || !ImGui::BeginMainMenuBar()) {
         return;
@@ -983,9 +1105,12 @@ void DrawTopBar() {
         ImGui::EndMenu();
     }
 
-    const float hideWidth = ImGui::CalcTextSize("Hide (F10 / LB+RB+Y)").x + ImGui::GetStyle().FramePadding.x * 2.0f;
+    const std::string hideLabel = OverlayHotkeyButtons().empty()
+                                      ? std::string("Hide (F10)")
+                                      : "Hide (F10 / " + OverlayHotkeyLabel() + ")";
+    const float hideWidth = ImGui::CalcTextSize(hideLabel.c_str()).x + ImGui::GetStyle().FramePadding.x * 2.0f;
     ImGui::SetCursorPosX(std::max(ImGui::GetCursorPosX(), ImGui::GetWindowWidth() - hideWidth - 8.0f));
-    if (ImGui::MenuItem("Hide (F10 / LB+RB+Y)")) {
+    if (ImGui::MenuItem(hideLabel.c_str())) {
         SetTopBarVisible(false);
     }
     ImGui::EndMainMenuBar();
@@ -995,11 +1120,16 @@ bool IsToggleKey(const SDL_Event& event, SDL_Scancode code) {
     return event.type == SDL_EVENT_KEY_DOWN && !event.key.repeat && event.key.scancode == code;
 }
 
-// Host-side gamepad toggle chord: LB+RB+Y. POLLED from live gamepad state (not read off a single
-// button event) so a chord whose three buttons land on different frames is still recognised on the
-// frame the last one is held. NORTH is SDL's positional name for the top face button, i.e. Y on an
-// Xbox pad. Any connected gamepad counts, so it works on the controller the player actually holds.
+// Host-side gamepad toggle chord, configurable via [video] overlay_hotkey (default
+// LB+RB+Y). POLLED from live gamepad state (not read off a single button event) so a
+// chord whose buttons land on different frames is still recognised on the frame the
+// last one is held. Any connected gamepad counts, so it works on the controller the
+// player actually holds. An empty/none chord disables the gamepad path entirely.
 bool GamepadToggleComboHeld() {
+    const std::vector<SDL_GamepadButton>& buttons = OverlayHotkeyButtons();
+    if (buttons.empty()) {
+        return false;
+    }
     int count = 0;
     SDL_JoystickID* ids = SDL_GetGamepads(&count);
     bool held = false;
@@ -1008,9 +1138,14 @@ bool GamepadToggleComboHeld() {
         if (pad == nullptr) {
             continue;
         }
-        if (SDL_GetGamepadButton(pad, SDL_GAMEPAD_BUTTON_LEFT_SHOULDER) &&
-            SDL_GetGamepadButton(pad, SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER) &&
-            SDL_GetGamepadButton(pad, SDL_GAMEPAD_BUTTON_NORTH)) {
+        bool allHeld = true;
+        for (SDL_GamepadButton button : buttons) {
+            if (!SDL_GetGamepadButton(pad, button)) {
+                allHeld = false;
+                break;
+            }
+        }
+        if (allHeld) {
             held = true;
             break;
         }

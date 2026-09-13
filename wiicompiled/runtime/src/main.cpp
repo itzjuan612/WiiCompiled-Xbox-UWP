@@ -1448,6 +1448,29 @@ int RuntimeMain(int argc, char** argv) {
             throw std::invalid_argument("The game runtime does not accept command-line options; use Config.toml through the installed host.");
         }
         RuntimeConfigFile::LogLoadedConfig();
+        // A syntax error anywhere in Config.toml makes toml++ reject the whole
+        // document, so every value (dvd_root included) reverts to a default. Left
+        // unreported, that surfaces much later as an unrelated "No DVD root is
+        // configured" and sends the user hunting for a path they clearly did set.
+        // Stop here with the real cause and the parser's line/column instead.
+        if (RuntimeConfigFile::ConfigParseFailed()) {
+            const std::string details =
+                "Config.toml could not be parsed, so every setting in it was ignored "
+                "and the game fell back to its built-in defaults. Fix the syntax and "
+                "relaunch. String values must be quoted, for example write\n"
+                "    overlay_hotkey = \"LB+RB+Y\"\n"
+                "rather than\n"
+                "    overlay_hotkey = LB+RB+Y\n\n"
+                "Parser message:\n" +
+                RuntimeConfigFile::ConfigParseError();
+            RT_LOGF(RT_TAG_RUNTIME, "Config.toml is invalid: %s",
+                    RuntimeConfigFile::ConfigParseError().c_str());
+            RuntimeCrash::WriteCrashArtifacts("config_parse", details);
+            SetRuntimeExitCode(EXIT_FAILURE);
+            ShowRuntimeFatalPopup("Config.toml is invalid", details);
+            MarkFatalErrorReported();
+            std::exit(EXIT_FAILURE);
+        }
         if (RuntimeConfigFile::DiscordPresenceEnabled()) {
             DiscordPresence::Initialize(RuntimeConfigFile::DiscordClientId(), "Mario Kart Wii");
         }

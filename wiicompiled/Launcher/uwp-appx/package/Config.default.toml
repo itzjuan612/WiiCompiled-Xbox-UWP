@@ -15,6 +15,12 @@ skip_unready_pipelines = true
 # pipeline_compile_workers = 0
 disable_copy_filter = true
 show_fps = true
+# Gamepad chord that opens the settings overlay: native button names
+# (left_shoulder, north, dpad_up, start, back, guide, left_stick, ...)
+# joined by '+'. Common aliases (LB, RB, A, B, X, Y, Start, Select, ...)
+# work too. 'none' disables the chord so only F10 and the mouse open the
+# menu. Read once, at startup.
+# overlay_hotkey = "LB+RB+Y"
 # Dolphin-style custom textures. When enabled, the renderer indexes
 # texture_replacements/ next to this file at startup and substitutes
 # any tex1_<W>x<H>_<hash>[_<tlut hash>]_<format>.dds or .png it finds
