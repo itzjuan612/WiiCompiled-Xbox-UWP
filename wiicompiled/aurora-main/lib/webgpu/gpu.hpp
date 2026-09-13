@@ -91,6 +91,10 @@ void cache_shutdown();
 // False on every other driver and before the adapter has been chosen.
 bool is_xbox_d3d12_driver() noexcept;
 
+// Bytes still allocatable by this process (the app memory budget on UWP/Xbox). Returns ~0 when
+// unknown so callers never block on it.
+uint64_t available_physical_memory() noexcept;
+
 struct BlobCacheStats {
   uint64_t lookups;
   uint64_t hits;

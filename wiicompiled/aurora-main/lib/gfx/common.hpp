@@ -136,6 +136,9 @@ public:
 
   void append(const void* data, size_t size) {
     resize(m_length + size, false);
+    if (m_data == nullptr) {
+      return; // allocation failed; the caller's data() check drops the upload
+    }
     memcpy(m_data + m_length, data, size);
     m_length += size;
   }
@@ -147,6 +150,9 @@ public:
 
   void append_zeroes(size_t size) {
     resize(m_length + size, true);
+    if (m_data == nullptr) {
+      return;
+    }
     m_length += size;
   }
 
@@ -154,6 +160,9 @@ public:
   // region: the mapped staging buffers are megabytes of write-combine memory.
   void append_uninitialized(size_t size) {
     resize(m_length + size, false);
+    if (m_data == nullptr) {
+      return;
+    }
     m_length += size;
   }
 
@@ -200,11 +209,13 @@ private:
     }
     const size_t zeroBegin = m_length;
     if (m_data == nullptr) {
-      if (zeroed) {
-        m_data = static_cast<uint8_t*>(calloc(1, size));
-      } else {
-        m_data = static_cast<uint8_t*>(malloc(size));
+      void* fresh = zeroed ? calloc(1, size) : malloc(size);
+      if (fresh == nullptr) {
+        // Allocation failed (memory pressure). Do not claim a capacity over a null
+        // base: callers check data() and drop the write instead of faulting.
+        return;
       }
+      m_data = static_cast<uint8_t*>(fresh);
       m_owned = true;
       m_capacity = size;
       // calloc already cleared the whole allocation.
@@ -229,7 +240,7 @@ private:
       m_data = static_cast<uint8_t*>(realloc(m_data, capacity));
       m_capacity = capacity;
     }
-    if (zeroed && size > zeroBegin) {
+    if (zeroed && size > zeroBegin && m_data != nullptr) {
       memset(m_data + zeroBegin, 0, size - zeroBegin);
     }
   }
@@ -249,10 +260,13 @@ inline constexpr uint64_t UniformBufferSize = 25165824;  // 24mb
 inline constexpr uint64_t VertexBufferSize = 3145728;    // 3mb
 inline constexpr uint64_t IndexBufferSize = 2097152;     // 2mb
 inline constexpr uint64_t StorageBufferSize = 8388608;   // 8mb
-// 64mb: the mapped range is a hard capacity (non-owned, cannot grow), and a
-// single frame of first-use texture uploads (WFC lobby / online race intro)
-// was observed to exceed the previous 24mb on Xbox, aborting in resize().
-inline constexpr uint64_t TextureUploadSize = 67108864;  // 64mb
+// 24mb fast-path for texture uploads; anything that does not fit spills to CPU
+// memory (push_texture_upload) and is encoded through a transient buffer at
+// end_batch. The bump to 64mb that briefly lived here enlarged every Xbox
+// staging slot to ~101mb (x3 slots) and made the write-map intermittently fail
+// on the shared CPU/GPU heap during an online race, which presented as a null
+// memcpy crash; the spill path makes the big fast-path buffer unnecessary.
+inline constexpr uint64_t TextureUploadSize = 25165824;  // 24mb
 
 extern AuroraStats g_stats;
 extern uint32_t g_drawCallCount;

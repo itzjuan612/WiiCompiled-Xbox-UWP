@@ -9,9 +9,10 @@ display_mode = "windowed"
 graphics_api = "auto"
 skip_unready_pipelines = true
 # Threads compiling graphics pipelines at once. 0 (or leaving this out) uses
-# the driver default: four on Xbox, where compiles allocate from memory shared
-# with the GPU, and one per available core elsewhere. Set it explicitly to
-# retune - drop it to 1 if a compile burst runs the console out of memory.
+# the driver default: one on Xbox, where the memory shared with the GPU can be
+# exhausted by concurrent compiles (crashing online play with a DXC
+# out-of-memory), and one per available core elsewhere. Set it explicitly to
+# retune; on a PC it is safe to raise, on Xbox only lower-than-1 is meaningful.
 # pipeline_compile_workers = 0
 disable_copy_filter = true
 show_fps = true

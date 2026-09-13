@@ -77,6 +77,20 @@ bool is_xbox_d3d12_driver() noexcept {
   return g_xboxD3D12Driver.load(std::memory_order_relaxed);
 }
 
+// Bytes the process may still allocate. On UWP/Xbox GlobalMemoryStatusEx reports the app's memory
+// budget (target minus committed), not the physical device, which is exactly the quantity to check
+// before a pipeline compile that would otherwise fail with DXC E_OUTOFMEMORY and remove the device.
+uint64_t available_physical_memory() noexcept {
+#if defined(_WIN32)
+  MEMORYSTATUSEX status{};
+  status.dwLength = sizeof(status);
+  if (GlobalMemoryStatusEx(&status)) {
+    return status.ullAvailPhys;
+  }
+#endif
+  return ~static_cast<uint64_t>(0);
+}
+
 static bool adapter_name_contains(const wgpu::StringView& name, std::string_view needle) {
   if (name.IsUndefined() || name.data == nullptr) {
     return false;

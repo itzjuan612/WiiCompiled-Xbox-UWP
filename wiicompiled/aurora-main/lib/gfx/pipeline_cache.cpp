@@ -500,28 +500,36 @@ static PipelineRef find_pipeline_impl(ShaderType type, const PipelineConfig& con
   }
 
   if (syncCreate) {
-    const auto pipeline = cb();
-    {
-      std::scoped_lock guard{g_pipelineMutex};
-      removedPending = remove_pending_pipeline(g_priorityPipelines, hash);
-      removedPending = remove_pending_pipeline(g_backgroundPipelines, hash) || removedPending;
-      if (removedPending) {
-        g_pendingPipelines.erase(hash);
+    try {
+      const auto pipeline = cb();
+      {
+        std::scoped_lock guard{g_pipelineMutex};
+        removedPending = remove_pending_pipeline(g_priorityPipelines, hash);
+        removedPending = remove_pending_pipeline(g_backgroundPipelines, hash) || removedPending;
+        if (removedPending) {
+          g_pendingPipelines.erase(hash);
+        }
+        auto [it, inserted] = g_pipelines.try_emplace(hash, CachedPipeline{
+                                                                .pipeline = pipeline,
+                                                                .firstFrameUsed = firstFrameUsed,
+                                                            });
+        if (!inserted && persist && firstFrameUsed < it->second.firstFrameUsed) {
+          it->second.firstFrameUsed = firstFrameUsed;
+        }
+        if (inserted) {
+          ++createdPipelines;
+        }
+        if (persist) {
+          cacheWrite = make_pipeline_cache_write(type, hash, config, firstFrameUsed);
+        }
+        notifyWaiters = true;
       }
-      auto [it, inserted] = g_pipelines.try_emplace(hash, CachedPipeline{
-                                                              .pipeline = pipeline,
-                                                              .firstFrameUsed = firstFrameUsed,
-                                                          });
-      if (!inserted && persist && firstFrameUsed < it->second.firstFrameUsed) {
-        it->second.firstFrameUsed = firstFrameUsed;
-      }
-      if (inserted) {
-        ++createdPipelines;
-      }
-      if (persist) {
-        cacheWrite = make_pipeline_cache_write(type, hash, config, firstFrameUsed);
-      }
-      notifyWaiters = true;
+    } catch (const std::exception& e) {
+      // Dawn threw (memory ceiling). Leave the pipeline unbuilt; the draw skips and any pending
+      // entry still queued will be compiled (guarded) by a worker later. Never abort the caller.
+      Log.warn("Synchronous pipeline compilation threw (skipping): {}", e.what());
+    } catch (...) {
+      Log.warn("Synchronous pipeline compilation threw an unknown exception (skipping)");
     }
   }
 
@@ -966,23 +974,60 @@ static void note_pipeline_queue_drained() {
 }
 
 static void compile_pending_pipeline(PendingPipeline pending) {
-  auto result = pending.create();
-  {
-    std::lock_guard lock{g_pipelineMutex};
-    const auto [_, inserted] = g_pipelines.try_emplace(pending.hash, CachedPipeline{
-                                                                         .pipeline = std::move(result),
-                                                                         .firstFrameUsed = pending.firstFrameUsed,
-                                                                     });
-    g_pendingPipelines.erase(pending.hash);
-    if (inserted) {
-      ++createdPipelines;
+  // pending.create() -> gx::create_pipeline -> build_shader can throw: Dawn raises a C++ exception
+  // when a compile hits the Series S memory ceiling during a busy Retro WFC race. That used to
+  // propagate out of the worker thread, terminate, and abort the whole process. Catch it here so a
+  // failed compile simply leaves the pipeline unbuilt: the referencing draw finds it missing next
+  // time and skips (deferred pipelines wait via skip_unready), so the scene degrades instead of
+  // crashing, and a later frame re-queues the compile once memory frees up.
+  auto create = std::move(pending.create);
+  const auto hash = pending.hash;
+  const uint32_t firstFrameUsed = pending.firstFrameUsed;
+  try {
+    auto result = create();
+    {
+      std::lock_guard lock{g_pipelineMutex};
+      const auto [_, inserted] = g_pipelines.try_emplace(hash, CachedPipeline{
+                                                                   .pipeline = std::move(result),
+                                                                   .firstFrameUsed = firstFrameUsed,
+                                                               });
+      g_pendingPipelines.erase(hash);
+      if (inserted) {
+        ++createdPipelines;
+      }
     }
+  } catch (const std::exception& e) {
+    Log.warn("Pipeline compilation threw (skipping this pipeline): {}", e.what());
+    std::lock_guard lock{g_pipelineMutex};
+    g_pendingPipelines.erase(hash);
+  } catch (...) {
+    Log.warn("Pipeline compilation threw an unknown exception (skipping this pipeline)");
+    std::lock_guard lock{g_pipelineMutex};
+    g_pendingPipelines.erase(hash);
   }
   g_pipelineCv.notify_all();
   --queuedPipelines;
   if (queuedPipelines.load() == 0) {
     note_pipeline_queue_drained();
   }
+}
+
+// Compiles currently running (or committed to start). A single free-memory check lets N workers all
+// see the same headroom and start together, collectively oversubscribing it - so the gate must
+// reserve for every in-flight compile, not just the one being asked about.
+static std::atomic<uint32_t> g_inflightCompiles{0};
+
+static bool pipeline_compile_memory_ok() {
+  // A pipeline compile asks DXC for a transient allocation plus the PSO itself; if that is the
+  // allocation that exhausts the app memory budget the whole device is removed and the process
+  // aborts. Keep a margin for every compile that may be running at once so a memory-tight scene
+  // (the Series S runs a Retro WFC race near its ceiling) never has the compiles tip it over. The
+  // budget reads as unlimited on PC, so this gates Xbox in practice and only defers compiles until
+  // the working set shrinks.
+  constexpr uint64_t kCompileHeadroomBytes = 200ull << 20;  // conservative per-compile transient
+  const uint64_t need =
+      kCompileHeadroomBytes * (static_cast<uint64_t>(g_inflightCompiles.load(std::memory_order_relaxed)) + 1);
+  return webgpu::available_physical_memory() >= need;
 }
 
 static void pipeline_worker() {
@@ -1012,7 +1057,21 @@ static void pipeline_worker() {
         ++g_activeBackgroundPipelineWorkers;
       }
     }
+    if (!pipeline_compile_memory_ok()) {
+      // No memory headroom for a compile right now: return the request and wait for the working
+      // set to shrink rather than let DXC fail and remove the device.
+      std::unique_lock lock{g_pipelineMutex};
+      (background ? g_backgroundPipelines : g_priorityPipelines).push_front(std::move(pending));
+      if (background) {
+        --g_activeBackgroundPipelineWorkers;
+        g_pipelineCv.notify_all();
+      }
+      g_pipelineCv.wait_for(lock, std::chrono::milliseconds(250), [] { return g_pipelineThreadEnd; });
+      continue;
+    }
+    g_inflightCompiles.fetch_add(1, std::memory_order_relaxed);
     compile_pending_pipeline(std::move(pending));
+    g_inflightCompiles.fetch_sub(1, std::memory_order_relaxed);
     if (background) {
       {
         std::lock_guard lock{g_pipelineMutex};
@@ -1025,6 +1084,9 @@ static void pipeline_worker() {
 
 static void build_synchronous_pipelines_for_frame() {
   while (g_pipelinesPerFrame < BuildPipelinesPerFrame) {
+    if (!pipeline_compile_memory_ok()) {
+      return;  // defer to a worker once the working set has room; the draw skips meanwhile
+    }
     PendingPipeline pending;
     {
       std::lock_guard lock{g_pipelineMutex};
@@ -1035,7 +1097,9 @@ static void build_synchronous_pipelines_for_frame() {
       pending = std::move(source.front());
       source.pop_front();
     }
+    g_inflightCompiles.fetch_add(1, std::memory_order_relaxed);
     compile_pending_pipeline(std::move(pending));
+    g_inflightCompiles.fetch_sub(1, std::memory_order_relaxed);
     ++g_pipelinesPerFrame;
   }
 }
@@ -1047,23 +1111,23 @@ static size_t pipeline_worker_count() {
   }
   const size_t availableWorkers =
       logicalProcessors > ReservedLogicalProcessors ? logicalProcessors - ReservedLogicalProcessors : 1;
-  // An explicit [video] pipeline_compile_workers always wins, so the memory/latency
-  // trade-off can be re-tuned on a device without another build.
-  if (g_config.pipelineCompileWorkers > 0) {
-    return std::clamp<size_t>(g_config.pipelineCompileWorkers, 1, MaxPipelineWorkers);
+  // An explicit [video] pipeline_compile_workers is honored (so a PC can be re-tuned without a
+  // build), except on Xbox: the console shares its memory between the CPU and GPU and every DXC
+  // compile is a large in-process transient. Four concurrent compiles exhaust the heap during the
+  // memory-heavy Retro WFC race / Mii-reveal / course-select screens - DXC returns E_OUTOFMEMORY,
+  // which Dawn treats as a fatal device removal -> abort, with the frame rate collapsing to ~18-33
+  // fps just before. So Xbox is hard-capped at a single worker even if the config asks for more.
+  const bool xbox = webgpu::is_xbox_d3d12_driver();
+  if (xbox) {
+    if (g_config.pipelineCompileWorkers > 1) {
+      Log.warn("[video] pipeline_compile_workers={} is unsafe on Xbox (CPU/GPU shared memory); using 1",
+               g_config.pipelineCompileWorkers);
+    }
+    return 1;
   }
-  if (webgpu::is_xbox_d3d12_driver()) {
-    // Xbox shares its memory between the CPU and GPU and every compile makes a large transient
-    // allocation in-process, which is why this was pinned to a single worker. Measured on a
-    // retail Series S instead: the boot backlog drains 3053 pipelines in 450 s with one worker,
-    // 3349 in 191 s with four, and both cost roughly the same 140 frames of gameplay overall -
-    // the extra threads move the same stall into a third of the time and improve the worst
-    // frame (21.7 fps against 4.3). The memory risk is unchanged in kind, so a device that trips
-    // it can go back to one worker through [video] pipeline_compile_workers.
-    constexpr size_t kXboxPipelineWorkers = 4;
-    return std::min(availableWorkers, kXboxPipelineWorkers);
-  }
-  return std::clamp(availableWorkers, size_t{1}, MaxPipelineWorkers);
+  const size_t requested =
+      g_config.pipelineCompileWorkers > 0 ? g_config.pipelineCompileWorkers : availableWorkers;
+  return std::clamp<size_t>(requested, size_t{1}, MaxPipelineWorkers);
 }
 
 template <typename PipelineConfig, typename CreateFn>

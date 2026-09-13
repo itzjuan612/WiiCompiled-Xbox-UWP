@@ -996,13 +996,17 @@ void map_staging_buffer() {
   g_stagingBuffers[currentStagingBuffer].MapAsync(
       wgpu::MapMode::Write, 0, StagingBufferSize, wgpu::CallbackMode::AllowSpontaneous,
       [](wgpu::MapAsyncStatus status, wgpu::StringView message) {
-        if (status == wgpu::MapAsyncStatus::CallbackCancelled || status == wgpu::MapAsyncStatus::Aborted) {
+        if (status != wgpu::MapAsyncStatus::Success) {
+          // Any non-success status (Cancelled/Aborted, but also MapFailed/PlatformFailure -
+          // e.g. the map cannot allocate under the Xbox shared CPU/GPU memory pressure on this
+          // much larger staging buffer) must be treated as Unmapped. Marking it Mapped on a
+          // failed map hands begin_frame a null GetMappedRange, and the raw vertex/uniform
+          // memcpys that bypass ByteBuffer::append then fault through null (write at 0x0). The
+          // caller drops the frame and retries.
           Log.warn("Buffer mapping {}: {}", magic_enum::enum_name(status), message);
           s_mappingState.store(BufferMapState::Unmapped, std::memory_order_release);
           return;
         }
-        ASSERT(status == wgpu::MapAsyncStatus::Success, "Buffer mapping failed: {} {}", magic_enum::enum_name(status),
-               message);
         s_mappingState.store(BufferMapState::Mapped, std::memory_order_release);
       });
 }
@@ -1178,12 +1182,24 @@ static void end_batch_impl(const wgpu::CommandEncoder& cmd, bool advanceFrame) {
       // which mishandles texel rows on Xbox UWP), so the transient buffer is
       // safe to fill directly and the copy uses the normal aligned path.
       for (auto& item : g_spilledTextureUploads) {
+        if (item.data.data() == nullptr || item.data.size() == 0) {
+          ++g_stats.totalNullMapWrites;
+          continue;
+        }
         const wgpu::BufferDescriptor spillBufferInfo{
             .label = "Spilled Texture Upload",
             .usage = wgpu::BufferUsage::CopySrc | wgpu::BufferUsage::CopyDst,
             .size = static_cast<uint64_t>(item.data.size()),
         };
         auto spillBuffer = g_device.CreateBuffer(&spillBufferInfo);
+        // The online race Mii reveal can burst well over 100mb of texture uploads in a frame; on the
+        // shared Xbox CPU/GPU heap a transient spill buffer of that size can fail to allocate. WriteBuffer
+        // then copies into a null buffer and faults the frame-worker thread (write at 0x0, no guest CPU
+        // context). Drop the upload instead; the texture is re-issued on a later, less-pressured frame.
+        if (!spillBuffer.Get()) {
+          ++g_stats.totalNullMapWrites;
+          continue;
+        }
         g_queue.WriteBuffer(spillBuffer, 0, item.data.data(), item.data.size());
         const wgpu::TexelCopyBufferInfo spillLayout{
             .layout =

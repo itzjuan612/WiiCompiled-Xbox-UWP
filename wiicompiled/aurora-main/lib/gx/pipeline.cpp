@@ -43,7 +43,21 @@ wgpu::ShaderModule cached_shader_module(const ShaderConfig& config) {
     }
   }
 
-  auto module = build_shader(config);
+  // A shader compile can throw (Dawn/DXC failing under the Series S memory ceiling during a busy
+  // Retro WFC race is the common case). Left unhandled that both terminates the compiling thread
+  // and poisons this cache entry (compiling stays true forever), so every other waiter on the same
+  // config would then hang. Reset + wake waiters and drop the failed entry so a later frame can
+  // retry, then rethrow so the caller records the miss.
+  wgpu::ShaderModule module;
+  try {
+    module = build_shader(config);
+  } catch (...) {
+    std::lock_guard lock{sShaderModuleCacheMutex};
+    entry->compiling = false;
+    entry->ready.notify_all();
+    sShaderModuleCache.erase(config);
+    throw;
+  }
   {
     std::lock_guard lock{sShaderModuleCacheMutex};
     entry->module = module;

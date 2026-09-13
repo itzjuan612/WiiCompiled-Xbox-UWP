@@ -1316,6 +1316,12 @@ void AbortSignalHandler(int signum) {
     // emitted here too. It is idempotent, so a later AtExitHandler is a no-op.
     GuestFlat::LogFaultSummary();
 
+    // Identify the aborting call stack FIRST and flush it immediately: an unmarked std::abort can
+    // come from any dependency, and a UWP process is torn down before buffered output would flush.
+    // Dump raw module!+RVA frames (resolvable even without PDBs), bypassing the re-entrancy guard.
+    std::fputs(FormatHostStackTrace(1).c_str(), stderr);
+    std::fflush(stderr);
+
     ShowRuntimeFatalPopup("a fatal internal error occurred",
                           "The process called abort while running the game or Aurora renderer.\n\n"
                           "This usually means an unimplemented function, failed renderer assertion, "
