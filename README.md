@@ -49,6 +49,18 @@ mod's `Code.pul`. This port does the same and ships both executables in one pack
   retro_rewind_root = "E:\\RetroRewind\\RetroRewind6"
   overlay_roots = ["E:\\RetroRewind"]
   ```
+> [!NOTE]
+> PC users: The packaged (Xbox / Windows app) build runs inside a sandbox and may only write inside its
+> own app data folder. Retro Rewind's `riivolution` save redirect writes *next to the pack*, so
+> a pack that lives outside app data is read-only to that build. Nothing has been saved there
+> yet and the redirect is skipped, keeping the save in the configured NAND; if the folder
+> already holds a save the build stops with an error naming it rather than silently abandoning
+> it. Fix it by moving the pack into the app's data folder, using the unpackaged desktop build,
+> or granting write access:
+>
+> ```powershell
+> icacls "<pack>\riivolution" /grant *S-1-15-2-1:(OI)(CI)M
+> ```
 
 - Online play is enabled at translation time via the signed Retro-WFC payload; the runtime's
   `[OSReport] WWFC_NOTICE: Payload version …` line confirms it is active. No host rewriting is done in
