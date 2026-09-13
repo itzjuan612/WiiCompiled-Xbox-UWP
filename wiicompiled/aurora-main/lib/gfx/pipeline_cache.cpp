@@ -1053,12 +1053,15 @@ static size_t pipeline_worker_count() {
     return std::clamp<size_t>(g_config.pipelineCompileWorkers, 1, MaxPipelineWorkers);
   }
   if (webgpu::is_xbox_d3d12_driver()) {
-    // Xbox shares its memory between the CPU and GPU and runs close to the ceiling. The D3D12
-    // backend compiles shaders in-process, and each concurrent compile makes a large transient
-    // allocation; a burst of first-use pipelines during a race would exhaust the remaining
-    // budget and fail with E_OUTOFMEMORY. A single worker keeps at most one transient
-    // allocation alive at a time, which is the largest lever available there.
-    return 1;
+    // Xbox shares its memory between the CPU and GPU and every compile makes a large transient
+    // allocation in-process, which is why this was pinned to a single worker. Measured on a
+    // retail Series S instead: the boot backlog drains 3053 pipelines in 450 s with one worker,
+    // 3349 in 191 s with four, and both cost roughly the same 140 frames of gameplay overall -
+    // the extra threads move the same stall into a third of the time and improve the worst
+    // frame (21.7 fps against 4.3). The memory risk is unchanged in kind, so a device that trips
+    // it can go back to one worker through [video] pipeline_compile_workers.
+    constexpr size_t kXboxPipelineWorkers = 4;
+    return std::min(availableWorkers, kXboxPipelineWorkers);
   }
   return std::clamp(availableWorkers, size_t{1}, MaxPipelineWorkers);
 }
