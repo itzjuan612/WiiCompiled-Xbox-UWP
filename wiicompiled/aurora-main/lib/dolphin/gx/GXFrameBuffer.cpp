@@ -8,6 +8,7 @@
 #include "../../internal.hpp"
 #include "../../window.hpp"
 #include "../../gfx/clear.hpp"
+#include "../../gfx/common.hpp"
 #include "../../webgpu/gpu.hpp"
 #include "../vi/vi_internal.hpp"
 
@@ -15,6 +16,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <chrono>
 
 namespace {
 struct CopyClearState {
@@ -523,12 +525,20 @@ void GXCopyTex(void* dest, GXBool clear) {
   // Skip only recurring color copies so one-shot copies are never lost.
   const bool producedConsecutively = handle.revision != 0 && currentFrame - handle.lastProducedFrame <= 1;
   const bool persistentCopy = !aurora::gx::is_depth_format(texCopyFmt) && !producedConsecutively;
-  aurora::gfx::resolve_pass(handle.handle, rect, clearState.clearColor, clearState.clearAlpha, clearState.clearDepth,
+  ++aurora::gfx::g_stats.totalTexCopies;
+  if (persistentCopy) {
+    ++aurora::gfx::g_stats.totalPersistentTexCopies;
+  }
+	const auto copyResolveStart = std::chrono::steady_clock::now();
+	aurora::gfx::resolve_pass(handle.handle, rect, clearState.clearColor, clearState.clearAlpha, clearState.clearDepth,
                             clearState.clearColorValue, aurora::gx::clear_depth_value(), resolveFmt,
                             &sourceRect.sampleRect, g_gxState.texCopyHalfScale, &copyFilter, forceOpaqueAlpha,
                             sourceRect.sampleRect.w() / std::max<float>(g_gxState.texCopySrc.height, 1.0f),
                             (g_gxState.copyClamp & GX_CLAMP_TOP) != 0,
                             (g_gxState.copyClamp & GX_CLAMP_BOTTOM) != 0, persistentCopy);
+  aurora::gfx::g_stats.totalCopyResolveUs += static_cast<uint64_t>(
+      std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - copyResolveStart)
+          .count());
   ++handle.revision;
   handle.lastProducedFrame = currentFrame;
   handle.width = logicalDstWidth;

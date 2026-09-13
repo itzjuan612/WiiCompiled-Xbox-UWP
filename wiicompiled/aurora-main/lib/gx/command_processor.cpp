@@ -2083,6 +2083,7 @@ static const CachedPipelineState& resolve_pipeline_state(GXPrimitive prim, GXVtx
 bool submit_raw_draw(GXPrimitive prim, GXVtxFmt fmt, const uint8_t* vertices, uint16_t vtxCount,
                      uint32_t vertexBytes) {
   ZoneScoped;
+  const auto submitStart = std::chrono::steady_clock::now();
   if (vertices == nullptr || vtxCount == 0 || vertexBytes == 0) {
     return false;
   }
@@ -2113,7 +2114,11 @@ bool submit_raw_draw(GXPrimitive prim, GXVtxFmt fmt, const uint8_t* vertices, ui
   }
 
   // This entry point bypasses process(), so it owns the renderer lock itself.
+  const auto lockStart = std::chrono::steady_clock::now();
   std::lock_guard gpuLock(aurora::renderer_gpu_mutex());
+  aurora::gfx::g_stats.totalRawDrawLockUs += static_cast<uint64_t>(
+      std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - lockStart).count());
+  ++aurora::gfx::g_stats.totalRawDraws;
   const gfx::Range vertRange = gfx::push_verts(vertices, vertexBytes);
   const bool interpolationIdentityActive = frame_interpolation_identity_needed();
   const PnMtxUsage matrixUsage = interpolationIdentityActive
@@ -2123,6 +2128,8 @@ bool submit_raw_draw(GXPrimitive prim, GXVtxFmt fmt, const uint8_t* vertices, ui
                        matrixUsage.mask, matrixUsage.topologySignature,
                        interpolationIdentityActive ? draw_geometry_signature(fmt, vertices, vtxCount, vtxSize) : 0,
                        interpolationIdentityActive);
+  aurora::gfx::g_stats.totalRawDrawUs += static_cast<uint64_t>(
+      std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - submitStart).count());
   return true;
 }
 

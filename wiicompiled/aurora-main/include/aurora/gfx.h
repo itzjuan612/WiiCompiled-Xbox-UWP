@@ -30,6 +30,38 @@ typedef struct {
   uint32_t lastTextureUploadSize;
   uint32_t presentedFrameCount;
   uint32_t interpolatedFrameCount;
+  // Texture uploads that did not fit the staging region and had to be streamed through a
+  // transient buffer of their own. Cumulative since init, so a screen that bursts them once is
+  // still visible to a low-frequency sampler: read the delta between samples, not the value.
+  uint64_t totalSpilledUploads;
+  uint64_t totalSpilledBytes;
+  // How much the emulated CPU spends stalled inside the renderer, and the EFB texture copies that
+  // usually cause it (each one can force a mid-frame submit and a wait for the frame worker).
+  // Cumulative since init, so the delta between two coarse samples is what matters.
+  uint64_t totalWorkerWaitUs;
+  uint64_t totalWorkerWaits;
+  uint64_t totalTexCopies;
+  uint64_t totalPersistentTexCopies;
+  // Wall time the EFB->texture copy resolves spent on the thread that issued them (the emulated CPU
+  // thread), so it looks like emulated work from the outside.
+  uint64_t totalCopyResolveUs;
+  // FIFO drains: each one decodes a batch of GX commands on the calling thread and lets the current
+  // frame be sealed/encoded, so a screen that forces many per frame pays for all of them serially.
+  uint64_t totalFifoDrains;
+  uint64_t totalFifoDrainUs;
+  // Raw bridge draws (menu/HUD g3d). Each grabs renderer_gpu_mutex to push vertices and record the
+  // draw, so when the async frame worker holds that lock to seal/encode, the producing thread blocks
+  // here. A screen with hundreds of draws/frame can serialise entirely behind the worker.
+  uint64_t totalRawDrawLockUs;
+  uint64_t totalRawDraws;
+  // Full guarded region of a raw draw (lock held through push_verts + record). Subtracting the
+  // lock-wait above isolates the recording work from lock contention.
+  uint64_t totalRawDrawUs;
+  // EFB->RAM read-backs the guest demanded. Each one finishes the frame still being recorded on the
+  // producer thread (mid-frame submit, wait for the frame worker, resume), so a few per frame is a
+  // large stall even though it looks like emulated-CPU time from the outside.
+  uint64_t totalEfbReadbacks;
+  uint64_t totalEfbReadbackUs;
 } AuroraStats;
 
 typedef struct {

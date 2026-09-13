@@ -361,8 +361,17 @@ bool wait_for_frame_worker_private_for(FrameWorkerPhase phase, std::chrono::micr
 
 void wait_for_frame_worker_private(FrameWorkerPhase phase) noexcept {
   constexpr auto kWaitServiceInterval = std::chrono::milliseconds(1);
+  if (frame_worker_phase_reached(phase)) {
+    return;
+  }
+  const auto started = std::chrono::steady_clock::now();
   while (!wait_for_frame_worker_private_for(phase, kWaitServiceInterval)) {
   }
+  const auto waitedUs = std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() -
+                                                                              started)
+                            .count();
+  gfx::g_stats.totalWorkerWaitUs += static_cast<uint64_t>(waitedUs);
+  ++gfx::g_stats.totalWorkerWaits;
 }
 
 bool wait_for_frame_worker_private_for(FrameWorkerPhase phase, std::chrono::microseconds timeout) noexcept {
@@ -1854,6 +1863,22 @@ void aurora_request_frame_capture(uint32_t frame, const char* outputPath) {
   aurora::g_captureOutputPath = outputPath != nullptr ? outputPath : "frame_capture.bmp";
   aurora::g_captureFrame.store(frame, std::memory_order_release);
 }
+namespace {
+// A demanded EFB->RAM read-back finishes the frame that is still being recorded, on the producer
+// thread. That is a renderer stall even though it lands in what the present loop measures as guest
+// time, so time the whole operation.
+struct EfbReadbackTimer {
+  const std::chrono::steady_clock::time_point started = std::chrono::steady_clock::now();
+  ~EfbReadbackTimer() {
+    const auto waitedUs = std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() -
+                                                                                started)
+                              .count();
+    aurora::gfx::g_stats.totalEfbReadbackUs += static_cast<uint64_t>(waitedUs);
+    ++aurora::gfx::g_stats.totalEfbReadbacks;
+  }
+};
+} // namespace
+
 bool aurora_flush_efb_copies_to_ram() {
 #ifdef AURORA_ENABLE_GX
   if (!aurora::gfx::efb_ram::has_pending()) {
@@ -1862,6 +1887,7 @@ bool aurora_flush_efb_copies_to_ram() {
   if (!aurora::gfx::efb_ram::prepare_downloads()) {
     return false;
   }
+  const EfbReadbackTimer readbackTimer;
 
   // This finalizes the frame still being recorded, on the producer thread, so join the whole cycle
   // first: the encode phase owns the previous passes, EFB targets and image pool.
@@ -1899,6 +1925,7 @@ bool aurora_flush_efb_copy_to_ram(void* dest) {
       !aurora::gfx::efb_ram::prepare_downloads(dest)) {
     return false;
   }
+  const EfbReadbackTimer readbackTimer;
 
   // See aurora_flush_efb_copies_to_ram: this encodes the in-progress frame on
   // the producer thread, so the worker's overlapped encode has to be finished.

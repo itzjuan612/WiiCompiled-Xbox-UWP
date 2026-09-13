@@ -524,6 +524,7 @@ void VI_HLE_PresentFrame(bool presentedXfb, bool paceToRetrace) {
     struct SequenceGuard {
         ~SequenceGuard() { s_presentSequenceActive.store(false, std::memory_order_release); }
     } sequenceGuard;
+    const Clock::time_point presentStarted = Clock::now();
     Clock::time_point paceDeadline{};
     bool paceThisFrame = false;
     if (paceToRetrace) {
@@ -580,13 +581,45 @@ void VI_HLE_PresentFrame(bool presentedXfb, bool paceToRetrace) {
     }
 
     aurora_end_frame();
+    const auto afterEndFrame = Clock::now();
     if (paceThisFrame) {
         PaceToRetraceBoundary(paceDeadline);
         std::lock_guard<std::mutex> lock(g_viMutex);
         s_lastPacedRetraceCount = g_vi.retraceCount;
     }
+    const auto afterPace = Clock::now();
+    // Where does a missed retrace actually go? `host` is the present sequence (waiting for the frame
+    // worker, the FIFO drain, the seal, the pace wait, and the next frame's pre-warm); `guest` is the
+    // emulated game running between two presentations; `pace` is the part of `host` that was spent
+    // deliberately idle at the retrace boundary, i.e. headroom. `worst` is the slowest single present
+    // in the window, so an average can hide a spike. Single-owner via s_presentSequenceActive, so
+    // none of these need synchronisation.
+    static Clock::time_point s_prevPresentReturned{};
+    static uint64_t s_hostUs = 0;
+    static uint64_t s_guestUs = 0;
+    static uint64_t s_paceUs = 0;
+    static uint64_t s_worstHostUs = 0;
+    static uint32_t s_windowFrames = 0;
+    if (s_prevPresentReturned.time_since_epoch().count() != 0) {
+        s_guestUs += static_cast<uint64_t>(
+            std::chrono::duration_cast<std::chrono::microseconds>(presentStarted - s_prevPresentReturned)
+                .count());
+    }
+    const uint64_t hostToPaceUs = static_cast<uint64_t>(
+        std::chrono::duration_cast<std::chrono::microseconds>(afterPace - presentStarted).count());
+    s_hostUs += hostToPaceUs;
+    s_paceUs += static_cast<uint64_t>(
+        std::chrono::duration_cast<std::chrono::microseconds>(afterPace - afterEndFrame).count());
+    if (hostToPaceUs > s_worstHostUs) {
+        s_worstHostUs = hostToPaceUs;
+    }
+    ++s_windowFrames;
     settings_overlay::AdvancePresentedFrame();
-    // TEMP diagnostics (video/input porting): one line every 300 presents.
+    // Per-frame attribution, one line every 300 presents (~5 s). `host` is the present sequence, `pace`
+    // the deliberate idle at the retrace boundary, and the rest splits the `guest` period into the
+    // renderer stalls that happen on the emulated CPU thread. Note `rawdraws` is timed from
+    // submit_raw_draw's entry, so the drain it forces is counted in `drains` too - the two overlap and
+    // must not be summed.
     static uint32_t s_diagFrames = 0;
     if ((++s_diagFrames % 300u) == 0u) {
         const AuroraStats* st = aurora_get_stats();
@@ -600,8 +633,80 @@ void VI_HLE_PresentFrame(bool presentedXfb, bool paceToRetrace) {
                           << " efffps=" << pt.effectiveFramesPerSecond
                           << " draws=" << st->drawCallCount
                           << " pipesCreated=" << st->createdPipelines
-                          << " pipesQueued=" << aurora_get_queued_pipeline_count()
-                          << " driver=" << (driver ? driver : "?");
+                          << " pipesQueued=" << aurora_get_queued_pipeline_count();
+        const uint32_t measuredFrames = s_windowFrames != 0u ? s_windowFrames : 1u;
+        // Tenths of a millisecond: a healthy host-side present is well under 1 ms, and whole-ms
+        // truncation made every field read as zero.
+        const auto msOf = [](uint64_t totalUs, uint64_t frames) {
+            const uint64_t tenths = totalUs / (frames != 0u ? frames : 1u) / 100u;
+            return std::to_string(tenths / 10u) + "." + std::to_string(tenths % 10u);
+        };
+        RT_LOG(RT_TAG_VI) << " host=" << msOf(s_hostUs, measuredFrames) << "ms"
+                          << " guest=" << msOf(s_guestUs, measuredFrames) << "ms"
+                          << " pace=" << msOf(s_paceUs, measuredFrames) << "ms"
+                          << " worst=" << msOf(s_worstHostUs, 1u) << "ms";
+        s_hostUs = 0;
+        s_guestUs = 0;
+        s_paceUs = 0;
+        s_worstHostUs = 0;
+        s_windowFrames = 0;
+        // Guest time alone does not say who owns the frame: the renderer stalls the emulated CPU in
+        // plain view of `guest`, so break out the waits and the EFB copies that cause them.
+        static uint64_t s_lastWorkerWaits = 0;
+        static uint64_t s_lastWorkerWaitUs = 0;
+        static uint64_t s_lastTexCopies = 0;
+        static uint64_t s_lastPersistentCopies = 0;
+        static uint64_t s_lastReadbacks = 0;
+        static uint64_t s_lastReadbackUs = 0;
+        static uint64_t s_lastCopyResolveUs = 0;
+        static uint64_t s_lastFifoDrains = 0;
+        static uint64_t s_lastFifoDrainUs = 0;
+        static uint64_t s_lastRawDraws = 0;
+        static uint64_t s_lastRawDrawUs = 0;
+        static uint64_t s_lastRawDrawLockUs = 0;
+        const uint64_t workerWaits = st->totalWorkerWaits - s_lastWorkerWaits;
+        const uint64_t workerWaitUs = st->totalWorkerWaitUs - s_lastWorkerWaitUs;
+        const uint64_t texCopies = st->totalTexCopies - s_lastTexCopies;
+        const uint64_t persistentCopies = st->totalPersistentTexCopies - s_lastPersistentCopies;
+        const uint64_t copyResolveUs = st->totalCopyResolveUs - s_lastCopyResolveUs;
+        const uint64_t readbacks = st->totalEfbReadbacks - s_lastReadbacks;
+        const uint64_t readbackUs = st->totalEfbReadbackUs - s_lastReadbackUs;
+        const uint64_t fifoDrains = st->totalFifoDrains - s_lastFifoDrains;
+        const uint64_t fifoDrainUs = st->totalFifoDrainUs - s_lastFifoDrainUs;
+        const uint64_t rawDraws = st->totalRawDraws - s_lastRawDraws;
+        const uint64_t rawDrawUs = st->totalRawDrawUs - s_lastRawDrawUs;
+        const uint64_t rawDrawLockUs = st->totalRawDrawLockUs - s_lastRawDrawLockUs;
+        s_lastWorkerWaits = st->totalWorkerWaits;
+        s_lastWorkerWaitUs = st->totalWorkerWaitUs;
+        s_lastTexCopies = st->totalTexCopies;
+        s_lastPersistentCopies = st->totalPersistentTexCopies;
+        s_lastCopyResolveUs = st->totalCopyResolveUs;
+        s_lastReadbacks = st->totalEfbReadbacks;
+        s_lastReadbackUs = st->totalEfbReadbackUs;
+        s_lastFifoDrains = st->totalFifoDrains;
+        s_lastFifoDrainUs = st->totalFifoDrainUs;
+        s_lastRawDraws = st->totalRawDraws;
+        s_lastRawDrawUs = st->totalRawDrawUs;
+        s_lastRawDrawLockUs = st->totalRawDrawLockUs;
+        RT_LOG(RT_TAG_VI) << " waits=" << workerWaits << '/' << msOf(workerWaitUs, measuredFrames) << "ms"
+                          << " copies=" << texCopies << '/' << persistentCopies << '/'
+                          << msOf(copyResolveUs, measuredFrames) << "ms"
+                          << " drains=" << fifoDrains << '/' << msOf(fifoDrainUs, measuredFrames) << "ms"
+                          << " rawdraws=" << rawDraws << '/' << msOf(rawDrawUs, measuredFrames) << "ms"
+                          << "(lock " << msOf(rawDrawLockUs, measuredFrames) << "ms)"
+                          << " readbacks=" << readbacks << '/' << msOf(readbackUs, measuredFrames) << "ms";
+        // Spills are rare by design, so only say something when this window saw one: it is the
+        // signature of a screen whose texture burst does not fit the staging region.
+        static uint64_t s_lastSpilledUploads = 0;
+        static uint64_t s_lastSpilledBytes = 0;
+        const uint64_t spilledUploads = st->totalSpilledUploads - s_lastSpilledUploads;
+        const uint64_t spilledBytes = st->totalSpilledBytes - s_lastSpilledBytes;
+        s_lastSpilledUploads = st->totalSpilledUploads;
+        s_lastSpilledBytes = st->totalSpilledBytes;
+        if (spilledUploads != 0u) {
+            RT_LOG(RT_TAG_VI) << " spills=" << spilledUploads << '/' << (spilledBytes >> 20) << "MB";
+        }
+        RT_LOG(RT_TAG_VI) << " driver=" << (driver ? driver : "?");
         for (int i = 0; i < winCount; ++i) {
             int w = 0, h = 0;
             SDL_GetWindowSize(wins[i], &w, &h);
@@ -632,6 +737,11 @@ void VI_HLE_PresentFrame(bool presentedXfb, bool paceToRetrace) {
             g_auroraFrameActive.store(true, std::memory_order_release);
         }
     }
+    // The pre-warm above is host work too, so charge it to `host` and only then close the frame:
+    // everything from here to the next presentation is the guest running the game.
+    s_hostUs += static_cast<uint64_t>(
+        std::chrono::duration_cast<std::chrono::microseconds>(Clock::now() - afterPace).count());
+    s_prevPresentReturned = Clock::now();
 }
 
 // -----------------------------------------------------------------------------

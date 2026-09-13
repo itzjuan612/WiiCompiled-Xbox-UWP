@@ -1171,6 +1171,8 @@ static void end_batch_impl(const wgpu::CommandEncoder& cmd, bool advanceFrame) {
       }
       g_textureUploads.clear();
       g_textureUpload.release();
+      uint64_t spilledBytes = 0;
+      uint32_t spilledUploads = 0;
       // Spilled uploads: frames whose texture data exceeded the staging
       // region. Queue::WriteBuffer is a plain byte copy (unlike WriteTexture,
       // which mishandles texel rows on Xbox UWP), so the transient buffer is
@@ -1193,8 +1195,12 @@ static void end_batch_impl(const wgpu::CommandEncoder& cmd, bool advanceFrame) {
             .buffer = spillBuffer,
         };
         cmd.CopyBufferToTexture(&spillLayout, &item.tex, &item.size);
+        ++spilledUploads;
+        spilledBytes += item.data.size();
       }
       g_spilledTextureUploads.clear();
+      g_stats.totalSpilledUploads += spilledUploads;
+      g_stats.totalSpilledBytes += spilledBytes;
     }
   }
   currentStagingBuffer = (currentStagingBuffer + 1) % g_stagingBuffers.size();

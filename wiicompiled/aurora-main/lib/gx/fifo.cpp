@@ -1,6 +1,7 @@
 #include "fifo.hpp"
 #include "command_processor.hpp"
 #include "../internal.hpp"
+#include "../gfx/common.hpp"
 
 #include <chrono>
 #include <cstdio>
@@ -73,6 +74,7 @@ static void note_drain_wait(uint64_t nanos) noexcept {
 }
 
 void drain() {
+  const auto drainStart = std::chrono::steady_clock::now();
   // SEALED, not DONE.
   const auto waited = aurora::wait_for_frame_worker_sealed();
   if (waited.count() > 0) UNLIKELY {
@@ -83,6 +85,9 @@ void drain() {
   }
   process(detail::sBufferData, detail::sBufferSize, true);
   detail::sBufferSize = 0;
+  aurora::gfx::g_stats.totalFifoDrainUs += static_cast<uint64_t>(
+      std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - drainStart).count());
+  ++aurora::gfx::g_stats.totalFifoDrains;
 }
 
 const uint8_t* get_buffer_data() { return detail::sBufferData; }
