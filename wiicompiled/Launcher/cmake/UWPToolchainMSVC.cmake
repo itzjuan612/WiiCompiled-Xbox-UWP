@@ -41,9 +41,40 @@
 
 cmake_minimum_required(VERSION 3.25)
 
+# --- Portable roots ---------------------------------------------------------
+# Every hardcoded path below can be overridden by the environment, so the same
+# toolchain file drives a WiiCompiled-Installer-managed build on any machine:
+#   MKW_MSVC_ROOT   <VC>\Tools\MSVC\<ver> of an installed VS2022 C++ toolset
+#   MKW_SDK_ROOT    Windows SDK install root (contains Include\, Lib\, bin\)
+#   MKW_SDK_VER     SDK version folder name, e.g. 10.0.28000.0
+#   MKW_MSCVINC / MKW_MSCVLIB   space-free junctions onto the MSVC include/lib
+#                               dirs (Ninja word-splits flags, so no spaces)
+#   MKW_PYTHON      interpreter with jinja2 + markupsafe for Dawn/SDL codegen
+# The launcher-relative paths (ASM clang, UWP stub headers) are derived from
+# this file's own location, so no variable is needed once the portable-tools
+# bootstrap has run (Launcher/artifacts/portable-tools) and the stub headers sit
+# in the tracked Launcher/uwp-msvc-stubs.
+get_filename_component(MSVCUWP_LAUNCHER_DIR "${CMAKE_CURRENT_LIST_DIR}" DIRECTORY)
+
+if(DEFINED ENV{MKW_MSVC_ROOT})
+  set(MSVCUWP_MSVC_ROOT "$ENV{MKW_MSVC_ROOT}")
+else()
+  set(MSVCUWP_MSVC_ROOT "E:/Program Files/Microsoft Visual Studio/2022/Community/VC/Tools/MSVC/14.44.35207")
+endif()
+if(DEFINED ENV{MKW_SDK_ROOT})
+  set(MSVCUWP_SDK_ROOT "$ENV{MKW_SDK_ROOT}")
+else()
+  set(MSVCUWP_SDK_ROOT "C:/WindowsSDK")
+endif()
+if(DEFINED ENV{MKW_SDK_VER})
+  set(MSVCUWP_SDK_VER "$ENV{MKW_SDK_VER}")
+else()
+  set(MSVCUWP_SDK_VER "10.0.28000.0")
+endif()
+
 set(CMAKE_SYSTEM_NAME WindowsStore)
 set(CMAKE_SYSTEM_PROCESSOR x86_64)
-set(CMAKE_SYSTEM_VERSION 10.0.28000.0)
+set(CMAKE_SYSTEM_VERSION "${MSVCUWP_SDK_VER}")
 
 # WHY THE ASM LANGUAGE USES Clang (see CMAKE_ASM_COMPILER below):
 # The product embeds its guest DOL/REL data sections in a generated AT&T-syntax
@@ -58,14 +89,9 @@ set(CMAKE_SYSTEM_VERSION 10.0.28000.0)
 # (extern "C" kData__*), so its COFF objects link cleanly into the MSVC exe.
 
 # --- Toolchain roots --------------------------------------------------------
-set(MSVCUWP_VS2022    "E:/Program Files/Microsoft Visual Studio/2022/Community")
-set(MSVCUWP_MSVC_ROOT "${MSVCUWP_VS2022}/VC/Tools/MSVC/14.44.35207")
 set(MSVCUWP_MSVC_BIN  "${MSVCUWP_MSVC_ROOT}/bin/Hostx64/x64")
 set(MSVCUWP_MSVC_INC  "${MSVCUWP_MSVC_ROOT}/include")
 set(MSVCUWP_MSVC_LIB  "${MSVCUWP_MSVC_ROOT}/lib/x64")
-
-set(MSVCUWP_SDK_ROOT  "C:/WindowsSDK")
-set(MSVCUWP_SDK_VER   "10.0.28000.0")
 set(MSVCUWP_SDK_INC   "${MSVCUWP_SDK_ROOT}/Include/${MSVCUWP_SDK_VER}")
 set(MSVCUWP_SDK_LIB   "${MSVCUWP_SDK_ROOT}/Lib/${MSVCUWP_SDK_VER}")
 set(MSVCUWP_SDK_BIN   "${MSVCUWP_SDK_ROOT}/bin/${MSVCUWP_SDK_VER}/x64")
@@ -84,8 +110,15 @@ set(CMAKE_DLLTOOL      "")  # MSVC uses dumpbin/lib, not the LLVM tools.
 # vendored .asm). Targets x86_64-w64-mingw32uwp (COFF); ml64 cannot assemble
 # AT&T and would fail on the MSVC runtime-library value. The C/CXX targets keep
 # MSVC (see above); the CMake ASM language is separate.
-set(MSVCUWP_ASM_CLANG "C:/MKWii/wiicompiled/Launcher/artifacts/portable-tools/llvm-mingw/bin/x86_64-w64-mingw32uwp-clang.exe")
-set(MSVCUWP_ASM_AR    "C:/MKWii/wiicompiled/Launcher/artifacts/portable-tools/llvm-mingw/bin/x86_64-w64-mingw32uwp-llvm-ar.exe")
+# The wrapper ships with the launcher-prepared portable llvm-mingw, so it is
+# derived from this file's location; MKW_ASM_BIN overrides for exotic layouts.
+if(DEFINED ENV{MKW_ASM_BIN})
+  set(MSVCUWP_ASM_BIN "$ENV{MKW_ASM_BIN}")
+else()
+  set(MSVCUWP_ASM_BIN "${MSVCUWP_LAUNCHER_DIR}/artifacts/portable-tools/llvm-mingw/bin")
+endif()
+set(MSVCUWP_ASM_CLANG "${MSVCUWP_ASM_BIN}/x86_64-w64-mingw32uwp-clang.exe")
+set(MSVCUWP_ASM_AR    "${MSVCUWP_ASM_BIN}/x86_64-w64-mingw32uwp-llvm-ar.exe")
 set(CMAKE_ASM_COMPILER        "${MSVCUWP_ASM_CLANG}")
 set(CMAKE_ASM_COMPILER_AR     "${MSVCUWP_ASM_AR}")
 set(CMAKE_ASM_COMPILER_RANLIB "${MSVCUWP_ASM_AR}")
@@ -109,13 +142,25 @@ set(CMAKE_ASM_COMPILER_RANLIB "${MSVCUWP_ASM_AR}")
 # projection), shared. /AI uses the SPACE form (/AI <dir>, not /AI:) — the dir
 # is space-free, so it stays one token. /AI is a compile-time C++/CX metadata
 # search; harmless for non-C++/CX targets.
-set(MSVCUWP_MSCVINC "C:/msvcinc")
-set(MSVCUWP_MSCVLIB "C:/msvclib")
+set(MSVCUWP_MSCVINC "$ENV{MKW_MSCVINC}")
+if(NOT MSVCUWP_MSCVINC)
+  set(MSVCUWP_MSCVINC "C:/msvcinc")
+endif()
+set(MSVCUWP_MSCVLIB "$ENV{MKW_MSCVLIB}")
+if(NOT MSVCUWP_MSCVLIB)
+  set(MSVCUWP_MSCVLIB "C:/msvclib")
+endif()
 # UWP-only header stubs (first, so a stub is found before any real header).
 # Currently dbghelp.h: abseil's crash-symbolizer includes it, but dbghelp.h is
 # desktop-only (absent from the UWP SDK). The stub degrades symbolization to
 # "no symbol" (the runtime doesn't use it meaningfully on UWP/Xbox).
-set(MSVCUWP_UWP_STUBS "C:/MKWii/wiicompiled/Launcher/artifacts/stubs-uwp")
+# These headers are tracked in the repo (Launcher/uwp-msvc-stubs), so the path
+# derives from this file's location; MKW_UWP_STUBS overrides for exotic layouts.
+if(DEFINED ENV{MKW_UWP_STUBS})
+  set(MSVCUWP_UWP_STUBS "$ENV{MKW_UWP_STUBS}")
+else()
+  set(MSVCUWP_UWP_STUBS "${MSVCUWP_LAUNCHER_DIR}/uwp-msvc-stubs")
+endif()
 # WINAPI_FAMILY=WINAPI_FAMILY_APP for EVERY target: the whole UWP/Xbox binary
 # must compile in the Windows Store API partition. CMake does NOT inject this
 # automatically for Ninja (only the SDL fork adds it to its own targets), and
@@ -196,8 +241,23 @@ set(ENV{WindowsSdkVersion} "${MSVCUWP_SDK_VER}")
 set(ENV{PATH} "${MSVCUWP_MSVC_BIN};${MSVCUWP_SDK_BIN};$ENV{PATH}")
 
 # Pin the Python used by generator scripts (Dawn codegen, SDL, etc.) to a known
-# interpreter with jinja2 + markupsafe. Same choice as the native UWP toolchain.
-set(Python3_EXECUTABLE "E:/anaconda3/envs/openwebui/python.exe")
+# interpreter with jinja2 + markupsafe. MKW_PYTHON wins; otherwise fall back to
+# whatever python is on PATH (the WiiCompiled-Installer verifies it can import
+# jinja2 + markupsafe before configuring, and reports what to install if not).
+if(DEFINED ENV{MKW_PYTHON} AND NOT "$ENV{MKW_PYTHON}" STREQUAL "")
+  set(Python3_EXECUTABLE "$ENV{MKW_PYTHON}")
+else()
+  if(EXISTS "E:/anaconda3/envs/openwebui/python.exe")
+    set(Python3_EXECUTABLE "E:/anaconda3/envs/openwebui/python.exe")
+  else()
+    find_program(MSVCUWP_PYTHON NAMES python python3)
+    if(MSVCUWP_PYTHON)
+      set(Python3_EXECUTABLE "${MSVCUWP_PYTHON}")
+    else()
+      set(Python3_EXECUTABLE "python")
+    endif()
+  endif()
+endif()
 
 # MSVC runtime: keep the *dynamic* CRT (default) so the product links
 # VCRUNTIME140.dll / vccorlib140.dll, which are present in the Xbox/UWP runtime.
