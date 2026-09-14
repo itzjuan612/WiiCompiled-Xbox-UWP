@@ -1,4 +1,4 @@
-#include "common.hpp"
+﻿#include "common.hpp"
 #include "../gx/shader_info.hpp"
 
 #include "clear.hpp"
@@ -1011,29 +1011,31 @@ void map_staging_buffer() {
       });
 }
 
-static bool begin_frame_impl(bool clearEfb) {
-  ZoneScoped;
-  {
-    ZoneScopedN("Wait for buffer map");
-    map_staging_buffer();
-    while (true) {
-      const auto mappingState = s_mappingState.load(std::memory_order_acquire);
-      if (mappingState == BufferMapState::Mapped) {
-        break;
-      }
-      if (mappingState == BufferMapState::Unmapped) {
-        // Frame begin failed because the staging map was aborted; the caller's retry loop drops the frame
-        // and any one-shot bakes recorded into it. Rate-limited.
-        static uint32_t s_beginFrameMapFailCount = 0;
-        if (s_beginFrameMapFailCount < 64 || (s_beginFrameMapFailCount & 255) == 0) {
-          Log.warn("begin_frame aborted: staging buffer unmapped (frame={} occurrences={})", g_frameIndex,
-                   s_beginFrameMapFailCount + 1);
-        }
-        ++s_beginFrameMapFailCount;
-        return false;
-      }
-      g_instance.ProcessEvents();
+// Shared by begin and abort: wait for the async staging map, then hand out the
+// sub-ranges. abort_frame releases the sub-buffers, so it re-runs this before
+// returning - the guest keeps issuing draws and texture uploads right after an
+// abort (scene teardown), and a push into a released (null) staging buffer
+// faults inside the row memcpys.
+static bool MapStagingAndSubBuffers() {
+  ZoneScopedN("Wait for buffer map");
+  map_staging_buffer();
+  while (true) {
+    const auto mappingState = s_mappingState.load(std::memory_order_acquire);
+    if (mappingState == BufferMapState::Mapped) {
+      break;
     }
+    if (mappingState == BufferMapState::Unmapped) {
+      // The staging map was aborted; the caller drops the frame and any one-shot
+      // bakes recorded into it. Rate-limited.
+      static uint32_t s_beginFrameMapFailCount = 0;
+      if (s_beginFrameMapFailCount < 64 || (s_beginFrameMapFailCount & 255) == 0) {
+        Log.warn("staging buffer unmapped (frame={} occurrences={})", g_frameIndex,
+                 s_beginFrameMapFailCount + 1);
+      }
+      ++s_beginFrameMapFailCount;
+      return false;
+    }
+    g_instance.ProcessEvents();
   }
   g_recordingSnapshotSlot = currentStagingBuffer;
   size_t bufferOffset = 0;
@@ -1060,6 +1062,14 @@ static bool begin_frame_impl(bool clearEfb) {
   g_storage.set_tag("storage");
   if constexpr (UseTextureBuffer) {
     g_textureUpload.set_tag("textureUpload");
+  }
+  return true;
+}
+
+static bool begin_frame_impl(bool clearEfb) {
+  ZoneScoped;
+  if (!MapStagingAndSubBuffers()) {
+    return false;
   }
 
   g_drawCallCount = 0;
@@ -1115,7 +1125,10 @@ void abort_frame() noexcept {
     g_stagingBuffers[currentStagingBuffer].Unmap();
     s_mappingState.store(BufferMapState::Unmapped, std::memory_order_release);
     currentStagingBuffer = (currentStagingBuffer + 1) % g_stagingBuffers.size();
-    map_staging_buffer();
+    // Re-map and re-issue the sub-ranges now: after this function returns the
+    // guest keeps submitting draws and uploads into them (a released staging
+    // buffer's base is null, and the upload row memcpys would fault on it).
+    MapStagingAndSubBuffers();
   }
   recycle_render_passes(g_renderPasses);
   g_currentRenderPass = UINT32_MAX;
@@ -1620,7 +1633,13 @@ void push_texture_upload(const uint8_t* data, uint32_t dataSize, uint32_t bytesP
   // For CopyBufferToTexture, we need an alignment of 256 per row (see Dawn kTextureBytesPerRowAlignment)
   const auto copyBytesPerRow = AURORA_ALIGN(bytesPerRow, 256);
   const size_t needed = static_cast<size_t>(copyBytesPerRow) * rowsPerImage;
-  if (g_textureUpload.size() + needed > TextureUploadSize) {
+  if (g_textureUpload.data() == nullptr) {
+    // The staging sub-buffer is released (abort_frame) and not yet re-mapped.
+    // Count it and take the spill path below: the row memcpys in the fast path
+    // would otherwise write through a null base.
+    ++g_stats.totalNullMapWrites;
+  }
+  if (g_textureUpload.size() + needed > TextureUploadSize || g_textureUpload.data() == nullptr) {
     // The mapped staging region is a hard capacity (non-owned ByteBuffer that
     // must never grow). Spill this upload to CPU memory; end_batch encodes it
     // through a transient buffer written with Queue::WriteBuffer followed by a
