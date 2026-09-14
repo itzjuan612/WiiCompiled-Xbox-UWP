@@ -1,4 +1,4 @@
-﻿#include "common.hpp"
+#include "common.hpp"
 #include "../gx/shader_info.hpp"
 
 #include "clear.hpp"
@@ -1025,14 +1025,15 @@ static bool MapStagingAndSubBuffers() {
       break;
     }
     if (mappingState == BufferMapState::Unmapped) {
-      // The staging map was aborted; the caller drops the frame and any one-shot
-      // bakes recorded into it. Rate-limited.
-      static uint32_t s_beginFrameMapFailCount = 0;
-      if (s_beginFrameMapFailCount < 64 || (s_beginFrameMapFailCount & 255) == 0) {
-        Log.warn("staging buffer unmapped (frame={} occurrences={})", g_frameIndex,
-                 s_beginFrameMapFailCount + 1);
+      // The staging map was aborted; begin_frame's caller drops the frame and any
+      // one-shot bakes recorded into it, abort_frame leaves the sub-buffers
+      // released (the null-base guards spill instead). Rate-limited across both
+      // the begin and the abort re-map path.
+      static uint32_t s_stagingMapFailCount = 0;
+      if (s_stagingMapFailCount < 64 || (s_stagingMapFailCount & 255) == 0) {
+        Log.warn("staging buffer unmapped (frame={} occurrences={})", g_frameIndex, s_stagingMapFailCount + 1);
       }
-      ++s_beginFrameMapFailCount;
+      ++s_stagingMapFailCount;
       return false;
     }
     g_instance.ProcessEvents();
@@ -1118,18 +1119,23 @@ void abort_frame() noexcept {
     g_textureUpload.release();
     g_spilledTextureUploads.clear();
   }
-  if (s_mappingState.load(std::memory_order_acquire) == BufferMapState::Mapped) {
-    // Pending interpolation tasks hold raw pointers into the mapped staging
-    // range; they must be dropped before the buffer is unmapped and rotated.
-    gx::drop_pending_frame_interpolation_uniforms();
+  // Pending interpolation tasks hold raw pointers into the mapped staging
+  // range; they must be dropped before the buffer is unmapped and rotated.
+  gx::drop_pending_frame_interpolation_uniforms();
+  if (s_mappingState.load(std::memory_order_acquire) != BufferMapState::Unmapped) {
+    // Unmap() also aborts an in-flight MapAsync (its callback completes with
+    // Aborted and stores Unmapped), so an abort taken while Mapping cannot
+    // leave s_mappingState describing the slot we rotate away from.
     g_stagingBuffers[currentStagingBuffer].Unmap();
     s_mappingState.store(BufferMapState::Unmapped, std::memory_order_release);
     currentStagingBuffer = (currentStagingBuffer + 1) % g_stagingBuffers.size();
-    // Re-map and re-issue the sub-ranges now: after this function returns the
-    // guest keeps submitting draws and uploads into them (a released staging
-    // buffer's base is null, and the upload row memcpys would fault on it).
-    MapStagingAndSubBuffers();
   }
+  // Re-establish the mapping and the sub-ranges on every exit path: after this
+  // function returns the guest keeps submitting draws and uploads into them
+  // (a released staging buffer's base is null, and the upload row memcpys would
+  // fault on it). If the re-map fails the sub-buffers stay null and the
+  // push/map/push_texture_upload null-base guards spill instead.
+  MapStagingAndSubBuffers();
   recycle_render_passes(g_renderPasses);
   g_currentRenderPass = UINT32_MAX;
   discard_suspended_efb_pass();
@@ -1569,6 +1575,13 @@ bool bind_pipeline(PipelineRef ref, const wgpu::RenderPassEncoder& pass, Pipelin
 }
 
 static inline Range push(ByteBuffer& target, const uint8_t* data, size_t length, size_t alignment) {
+  if (target.data() == nullptr) {
+    // Released staging sub-buffer (abort whose re-map failed): ByteBuffer::append
+    // spills to an owned heap buffer, so this frame's writes never reach the
+    // staging copy at end_batch. Counted so the window is visible, and it
+    // self-heals at the next begin_frame.
+    ++g_stats.totalNullMapWrites;
+  }
   size_t padding = 0;
   if (alignment != 0) {
     const size_t remainder = length % alignment;
@@ -1589,6 +1602,10 @@ static inline Range push(ByteBuffer& target, const uint8_t* data, size_t length,
   return {static_cast<uint32_t>(begin), static_cast<uint32_t>(length + padding)};
 }
 static inline Range map(ByteBuffer& target, size_t length, size_t alignment) {
+  if (target.data() == nullptr) {
+    // Same null-base spill window as push(): counted, self-heals at begin_frame.
+    ++g_stats.totalNullMapWrites;
+  }
   size_t padding = 0;
   if (alignment != 0) {
     const size_t remainder = length % alignment;

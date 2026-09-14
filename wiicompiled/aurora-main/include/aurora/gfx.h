@@ -62,9 +62,11 @@ typedef struct {
   // large stall even though it looks like emulated-CPU time from the outside.
   uint64_t totalEfbReadbacks;
   uint64_t totalEfbReadbackUs;
-  // Texture uploads dropped because the staging map/allocation returned a null base (memory
-  // pressure on the shared Xbox CPU/GPU heap). Non-zero means an upload was skipped to avoid
-  // writing through a null pointer - the old failure mode was a hard access violation here.
+  // Writes that hit a null staging base (an abort whose re-map failed, or memory pressure on
+  // the shared Xbox CPU/GPU heap): texture uploads spill to CPU memory and vertex/uniform/
+  // index/storage pushes spill to an owned buffer, so that data may not reach the GPU copy.
+  // Non-zero means writes were kept out of a null pointer - the old failure mode was a hard
+  // access violation here.
   uint64_t totalNullMapWrites;
 } AuroraStats;
 
