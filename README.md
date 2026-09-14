@@ -116,6 +116,8 @@ Then configure and build both products:
 This repository ships **source only** — no prebuilt package, because an appx contains the statically
 recompiled game code built from your own disc. Build it yourself (see [Building](#building)), then
 sideload to a console in Developer Mode.
+[WiiCompiled-UWP-Installer](https://github.com/itzjuan612/WiiCompiled-UWP-Installer) automates the
+whole thing, including certificate creation, `.appx` packing/signing and Device Portal deployment.
 
 1. **Enable Developer Mode** on the console (Xbox Dev Mode app) and note the console's IP address.
 2. **Turn on Device Portal** (Dev Home → Remote Access) and sign in at `https://<console-ip>:11443`
@@ -222,6 +224,27 @@ following is a real change in this repo:
   point, so `RetroRewind` builds it too.
 
 ## Building
+
+### The easy way: WiiCompiled-UWP-Installer
+
+[**WiiCompiled-UWP-Installer**](https://github.com/itzjuan612/WiiCompiled-UWP-Installer) is a portable
+Windows tool (GUI, plus a `--headless` CLI for every step) that automates this entire repository's
+build on a machine with nothing preconfigured. It clones this repo, bootstraps the portable toolchain
+(CMake, Ninja, llvm-mingw) and the pinned UWP dependency trees (the SDL3-uwp fork and Dawn, with their
+port patches carried in the tool), locates Visual Studio 2022/MSVC and a UWP-capable Windows SDK on
+any drive, mints a local dev signing certificate, stages a Retro Rewind pack (a `RetroRewind6` folder,
+a bare `Code.pul`, or the `Binaries\Code.pul` inside an update `.zip`), translates the base game plus
+the Retro Rewind shards (reusing the base translation while it still covers the staged `Code.pul`),
+compiles both executables, packs and signs the `.appx`, and deploys it to an Xbox Dev Portal or a PC.
+
+Grab the self-contained exe from its
+[latest release](https://github.com/itzjuan612/WiiCompiled-UWP-Installer/releases/latest) - no .NET
+install needed on the target machine. You still need Visual Studio 2022 (Desktop C++ workload), a
+UWP-capable Windows SDK, git, your own PAL `RMCP01` dump, and a Retro Rewind 6.x pack for the Retro
+Rewind leg. A new Retro Rewind release only needs a rebuild - the source is not pinned to an RR
+version.
+
+### Manually
 
 The build is driven from `wiicompiled/Launcher`:
 
