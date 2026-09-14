@@ -66,50 +66,6 @@ mod's `Code.pul`. This port does the same and ships both executables in one pack
   `[OSReport] WWFC_NOTICE: Payload version …` line confirms it is active. No host rewriting is done in
   the socket layer — the payload redirects the Nintendo WFC hostnames itself.
 
-### Building Retro Rewind
-
-Before configuring the UWP build, generate the Retro Rewind translation (see
-`wiicompiled/Launcher/LocalBuild.ps1` for the canonical argument list). The rough sequence, run from
-`wiicompiled/` with the translator CLI:
-
-```powershell
-# 1. base translation (records mod-patch awareness)
-dotnet translator\src\Translator.Cli\bin\Release\net8.0\Translator.Cli.dll translate-recursive 0x800060A4 `
-  --project projects\mkwii\recomp.yml --outdir generated\functions `
-  --output-metadata generated\base_translation_output.json `
-  --production-source-bundle generated\base_translation_sources.bin `
-  --no-function-files --prune-stale --threads 16
-
-# 2. base manifest
-dotnet ...\Translator.Cli.dll emit-base-manifest --project projects\mkwii\recomp.yml `
-  --out build\base --functions-dir generated\functions `
-  --translation-output-metadata generated\base_translation_output.json --region P
-
-# 3. translate the mod (downloads + validates the signed Retro-WFC payload)
-dotnet ...\Translator.Cli.dll translate-mod --project projects\mkwii\recomp.yml --profile retro-rewind `
-  --base-manifest build\base\mkwii_base_manifest.json `
-  --base-translation-output-metadata generated\base_translation_output.json `
-  --code-pul "<RetroRewind6>\Binaries\Code.pul" --mod-root "<RetroRewind6>" `
-  --mod-name "Retro Rewind" --region P --out build\mods\retro_rewind_full_cpp `
-  --prefer-cached-inputs --emit-cpp --threads 16 `
-  --retro-wfc-payload http://nas.play.rwfc.net/payload?g=RMCPD00
-
-# 4. data init + build shards
-dotnet ...\Translator.Cli.dll generate-data-init --project projects\mkwii\recomp.yml
-dotnet ...\Translator.Cli.dll emit-build-shards --project projects\mkwii\recomp.yml `
-  --base-metadata generated\base_translation_output.json --base-functions-dir generated\functions `
-  --native-source-dir runtime\src --out generated\build_shards `
-  --resolved-profile build\mods\retro_rewind_full_cpp\resolved_dispatch_profile.json `
-  --retro-cpp-dir build\mods\retro_rewind_full_cpp\cpp
-```
-
-Then configure and build both products:
-
-```powershell
-.\Launcher\configure-uwp-msvc.ps1
-.\Launcher\build-uwp-msvc.ps1 -Target mkw_release
-```
-
 
 ## Installing on an Xbox (Developer Mode)
 
@@ -257,6 +213,50 @@ The build is driven from `wiicompiled/Launcher`:
 The resulting `WiiCompiled.exe` is packaged into a signed `.appx` and deployed to a console in
 Developer Mode (see `wiicompiled/Launcher/HANDOFF-build17.md` for the historical UWP bring-up notes,
 and `wiicompiled/README.md` for the upstream native build).
+
+### Building Retro Rewind
+
+Before configuring the UWP build, generate the Retro Rewind translation (see
+`wiicompiled/Launcher/LocalBuild.ps1` for the canonical argument list). The rough sequence, run from
+`wiicompiled/` with the translator CLI:
+
+```powershell
+# 1. base translation (records mod-patch awareness)
+dotnet translator\src\Translator.Cli\bin\Release\net8.0\Translator.Cli.dll translate-recursive 0x800060A4 `
+  --project projects\mkwii\recomp.yml --outdir generated\functions `
+  --output-metadata generated\base_translation_output.json `
+  --production-source-bundle generated\base_translation_sources.bin `
+  --no-function-files --prune-stale --threads 16
+
+# 2. base manifest
+dotnet ...\Translator.Cli.dll emit-base-manifest --project projects\mkwii\recomp.yml `
+  --out build\base --functions-dir generated\functions `
+  --translation-output-metadata generated\base_translation_output.json --region P
+
+# 3. translate the mod (downloads + validates the signed Retro-WFC payload)
+dotnet ...\Translator.Cli.dll translate-mod --project projects\mkwii\recomp.yml --profile retro-rewind `
+  --base-manifest build\base\mkwii_base_manifest.json `
+  --base-translation-output-metadata generated\base_translation_output.json `
+  --code-pul "<RetroRewind6>\Binaries\Code.pul" --mod-root "<RetroRewind6>" `
+  --mod-name "Retro Rewind" --region P --out build\mods\retro_rewind_full_cpp `
+  --prefer-cached-inputs --emit-cpp --threads 16 `
+  --retro-wfc-payload http://nas.play.rwfc.net/payload?g=RMCPD00
+
+# 4. data init + build shards
+dotnet ...\Translator.Cli.dll generate-data-init --project projects\mkwii\recomp.yml
+dotnet ...\Translator.Cli.dll emit-build-shards --project projects\mkwii\recomp.yml `
+  --base-metadata generated\base_translation_output.json --base-functions-dir generated\functions `
+  --native-source-dir runtime\src --out generated\build_shards `
+  --resolved-profile build\mods\retro_rewind_full_cpp\resolved_dispatch_profile.json `
+  --retro-cpp-dir build\mods\retro_rewind_full_cpp\cpp
+```
+
+Then configure and build both products:
+
+```powershell
+.\Launcher\configure-uwp-msvc.ps1
+.\Launcher\build-uwp-msvc.ps1 -Target mkw_release
+```
 
 > [!NOTE]
 > Building the UWP target requires the MSVC toolchain, the Windows SDK, and a device or emulator in
