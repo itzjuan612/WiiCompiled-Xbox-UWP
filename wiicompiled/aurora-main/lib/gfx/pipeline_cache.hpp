@@ -23,6 +23,10 @@ void end_pipeline_frame();
 void set_skip_unready_pipelines(bool enabled) noexcept;
 bool skip_unready_pipelines() noexcept;
 uint32_t queued_pipeline_count() noexcept;
+// True when speculative (prewarm) compiles are parked because the device has no spare memory; the
+// queued pipelines then compile on demand instead. Lets the status overlay distinguish "compiling"
+// from "done for now, rest deferred".
+bool prewarm_parked() noexcept;
 
 template <typename Config>
 PipelineRef find_pipeline(ShaderType type, const Config& config, NewPipelineCallback&& cb);

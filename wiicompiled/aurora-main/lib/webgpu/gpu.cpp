@@ -748,8 +748,14 @@ bool initialize(AuroraBackend auroraBackend) {
     deviceDescriptor.requiredLimits = &requiredLimits;
     deviceDescriptor.SetUncapturedErrorCallback(
         [](const wgpu::Device& device, wgpu::ErrorType type, wgpu::StringView message) {
+          // A WebGPU uncaptured error is a per-operation failure: the call that raised it returns a
+          // null/invalid object and the device keeps working. On the Xbox the Series S shared heap
+          // can make a single DXC pipeline compile fail with E_OUTOFMEMORY mid-race, and treating
+          // that as fatal closed the game. Only genuine device loss (the separate lost callback ->
+          // fail_if_device_lost) is unrecoverable, so log these loudly and let the caller skip the
+          // failed draw instead of aborting.
           if (g_initialized.load(std::memory_order_acquire)) {
-            FATAL("WebGPU error {}: {}", underlying(type), message);
+            Log.error("WebGPU error {}: {}", underlying(type), message);
           } else {
             Log.warn("WebGPU error {}: {}", underlying(type), message);
           }

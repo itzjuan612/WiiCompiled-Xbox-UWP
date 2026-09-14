@@ -117,6 +117,9 @@ uint32_t aurora_get_frame_interpolation_fps();
 void aurora_set_skip_unready_pipelines(bool enabled);
 bool aurora_get_skip_unready_pipelines();
 uint32_t aurora_get_queued_pipeline_count();
+// True when prewarm compilation is parked for lack of memory (the queued pipelines will compile on
+// demand); false while compiles are actively running. See aurora_get_queued_pipeline_count.
+bool aurora_get_prewarm_parked();
 
 // Controls whether display copies bypass the Wii's vertical copy filter.
 void aurora_set_disable_copy_filter(bool disabled);

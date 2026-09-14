@@ -8,6 +8,7 @@
 #include <condition_variable>
 #include <memory>
 #include <mutex>
+#include <stdexcept>
 
 #include <absl/container/flat_hash_map.h>
 
@@ -51,6 +52,13 @@ wgpu::ShaderModule cached_shader_module(const ShaderConfig& config) {
   wgpu::ShaderModule module;
   try {
     module = build_shader(config);
+    // build_shader is noexcept: under the Series S memory ceiling Dawn's CreateShaderModule now
+    // logs its uncaptured error and returns a null handle instead of aborting. Treat that as a
+    // compile failure so the catch below drops the poisoned entry (a later frame retries) and the
+    // caller records a miss, rather than caching a dead module that every draw would reuse.
+    if (!module.Get()) {
+      throw std::runtime_error("shader module compilation failed (Dawn returned no module)");
+    }
   } catch (...) {
     std::lock_guard lock{sShaderModuleCacheMutex};
     entry->compiling = false;
@@ -71,7 +79,14 @@ wgpu::ShaderModule cached_shader_module(const ShaderConfig& config) {
 wgpu::RenderPipeline create_pipeline(const PipelineConfig& config) {
   ZoneScoped;
   const auto shader = cached_shader_module(config.shaderConfig);
-  return build_pipeline(config, {}, shader, "GX Pipeline");
+  auto pipeline = build_pipeline(config, {}, shader, "GX Pipeline");
+  // Same reasoning as cached_shader_module: a null pipeline is a recoverable per-config failure
+  // (Dawn already logged it), not a reason to tear the process down. Throwing lets the compile
+  // site drop this one pipeline so its draw is skipped this frame and retried when memory frees.
+  if (!pipeline.Get()) {
+    throw std::runtime_error("pipeline build failed (Dawn returned no pipeline)");
+  }
+  return pipeline;
 }
 
 void clear_shader_module_cache() {

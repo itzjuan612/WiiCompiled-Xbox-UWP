@@ -48,6 +48,7 @@ struct RuntimeUserConfig {
     std::optional<bool> disableCopyFilter;
     std::optional<bool> lytForcePacketPath;
     std::optional<uint32_t> pipelineCompileWorkers;
+    std::optional<uint32_t> prewarmMinFreeMb;
     std::optional<std::string> overlayHotkey;
     std::optional<bool> textureReplacements;
     std::optional<bool> textureDumps;
@@ -495,6 +496,7 @@ inline RuntimeUserConfig ParseConfigDocument(const toml::value& document) {
     config.disableCopyFilter = FindConfigValue<bool>(document, "video", "disable_copy_filter");
     config.lytForcePacketPath = FindConfigValue<bool>(document, "video", "lyt_force_packet_path");
     config.pipelineCompileWorkers = FindConfigUint(document, "video", "pipeline_compile_workers");
+    config.prewarmMinFreeMb = FindConfigUint(document, "video", "prewarm_min_free_mb");
     config.overlayHotkey = FindConfigValue<std::string>(document, "video", "overlay_hotkey");
     config.showFps = FindConfigValue<bool>(document, "video", "show_fps");
     config.textureReplacements = FindConfigValue<bool>(document, "video", "texture_replacements");
@@ -964,6 +966,15 @@ inline uint32_t PipelineCompileWorkers(uint32_t fallback = 0) {
     return Get().pipelineCompileWorkers.value_or(fallback);
 }
 
+// Free memory the renderer keeps in reserve before it stops precompiling pipelines in the
+// background (megabytes). Zero (the default) uses the platform value: 900 on Xbox, where
+// speculative compiles that outrun the shared CPU/GPU heap are what froze and crashed
+// online play. Raise it for a larger safety margin, lower it so more shaders finish
+// precompiling at the cost of a smaller margin.
+inline uint32_t PrewarmMinFreeMb(uint32_t fallback = 0) {
+    return Get().prewarmMinFreeMb.value_or(fallback);
+}
+
 inline bool ShowFps(bool fallback = true) {
     return Get().showFps.value_or(fallback);
 }
@@ -1086,6 +1097,9 @@ inline void LogLoadedConfig() {
             }
             if (config.pipelineCompileWorkers) {
                 std::cout << " pipeline_compile_workers=" << *config.pipelineCompileWorkers;
+            }
+            if (config.prewarmMinFreeMb) {
+                std::cout << " prewarm_min_free_mb=" << *config.prewarmMinFreeMb;
             }
             if (config.overlayHotkey) {
                 std::cout << " overlay_hotkey=\"" << *config.overlayHotkey << "\"";

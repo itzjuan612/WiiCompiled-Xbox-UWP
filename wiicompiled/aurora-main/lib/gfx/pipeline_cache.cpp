@@ -33,6 +33,10 @@ constexpr const char* SdlVfsName = "aurora_pipeline_cache_sdl_vfs";
 struct CachedPipeline {
   wgpu::RenderPipeline pipeline;
   uint32_t firstFrameUsed = UINT32_MAX;
+  // Frame of the last bind/find/wait that used this pipeline. Informational for diagnostics and
+  // any future reclamation work; the eviction sweep that consumed it was removed after measuring
+  // that releasing pipeline handles returns no memory on the Xbox driver (see pipeline_worker).
+  uint32_t lastUsedFrame = 0;
 };
 
 struct PendingPipeline {
@@ -58,6 +62,10 @@ static std::mutex g_pipelineMutex;
 static bool g_hasPipelineThread = false;
 static bool g_pipelineFrameActive = false;
 static std::atomic_bool g_skipUnreadyGxPipelines = false;
+// True while speculative (prewarm) compiles are parked because the device has no spare memory.
+// The prewarm queue never drains on a memory-constrained console, so without this the on-screen
+// "N shaders compiling" status would lie forever; it reports the real state instead.
+static std::atomic_bool g_prewarmParked{false};
 static size_t g_pipelinesPerFrame = 0;
 // Keep first-use compilation bounded. The render command stream remains ordered;
 // it waits for a queued pipeline only when the corresponding draw is consumed.
@@ -439,6 +447,8 @@ static PipelineRef find_pipeline_impl(ShaderType type, const PipelineConfig& con
 
   const PipelineRef hash = xxh3_hash(config, static_cast<HashType>(type));
   const uint32_t firstFrameUsed = firstFrameUsedOverride.value_or(current_frame());
+  const uint32_t nowFrame = current_frame();  // separate from firstFrameUsed: a cache preload
+                                              // passes a stored (old) first-frame value in
   const bool cachePreload = firstFrameUsedOverride.has_value();
   bool notifyWorker = false;
   bool syncCreate = false;
@@ -451,6 +461,7 @@ static PipelineRef find_pipeline_impl(ShaderType type, const PipelineConfig& con
     const bool skipUnreadyGxPipeline = deferGxPipeline && g_skipUnreadyGxPipelines.load(std::memory_order_relaxed);
     auto pipelineIt = g_pipelines.find(hash);
     if (pipelineIt != g_pipelines.end()) {
+      pipelineIt->second.lastUsedFrame = nowFrame;
       if (persist && firstFrameUsed < pipelineIt->second.firstFrameUsed) {
         pipelineIt->second.firstFrameUsed = firstFrameUsed;
         cacheWrite = make_pipeline_cache_write(type, hash, config, firstFrameUsed);
@@ -512,6 +523,7 @@ static PipelineRef find_pipeline_impl(ShaderType type, const PipelineConfig& con
         auto [it, inserted] = g_pipelines.try_emplace(hash, CachedPipeline{
                                                                 .pipeline = pipeline,
                                                                 .firstFrameUsed = firstFrameUsed,
+                                                                .lastUsedFrame = nowFrame,
                                                             });
         if (!inserted && persist && firstFrameUsed < it->second.firstFrameUsed) {
           it->second.firstFrameUsed = firstFrameUsed;
@@ -987,10 +999,11 @@ static void compile_pending_pipeline(PendingPipeline pending) {
     auto result = create();
     {
       std::lock_guard lock{g_pipelineMutex};
-      const auto [_, inserted] = g_pipelines.try_emplace(hash, CachedPipeline{
-                                                                   .pipeline = std::move(result),
-                                                                   .firstFrameUsed = firstFrameUsed,
-                                                               });
+    const auto [_, inserted] = g_pipelines.try_emplace(hash, CachedPipeline{
+        .pipeline = std::move(result),
+        .firstFrameUsed = firstFrameUsed,
+        .lastUsedFrame = current_frame(),  // a pipeline is compiled because a draw needs it now
+    });
       g_pendingPipelines.erase(hash);
       if (inserted) {
         ++createdPipelines;
@@ -1022,13 +1035,24 @@ static bool pipeline_compile_memory_ok() {
   // allocation that exhausts the app memory budget the whole device is removed and the process
   // aborts. Keep a margin for every compile that may be running at once so a memory-tight scene
   // (the Series S runs a Retro WFC race near its ceiling) never has the compiles tip it over. The
-  // budget reads as unlimited on PC, so this gates Xbox in practice and only defers compiles until
-  // the working set shrinks.
-  constexpr uint64_t kCompileHeadroomBytes = 200ull << 20;  // conservative per-compile transient
+  // margin is per-compile and sized from the measured DXC transient (an OOM still happened at ~468
+  // MB free with a 200 MB reserve, so the real peak is several hundred MB). The budget reads as
+  // unlimited on PC, so this gates Xbox in practice and only defers compiles until the working
+  // set shrinks; a deferred pipeline just skips its draw for now (skip_unready) instead of crashing.
+  constexpr uint64_t kCompileHeadroomBytes = 512ull << 20;  // conservative per-compile transient
   const uint64_t need =
       kCompileHeadroomBytes * (static_cast<uint64_t>(g_inflightCompiles.load(std::memory_order_relaxed)) + 1);
   return webgpu::available_physical_memory() >= need;
 }
+
+// Speculative (prewarm) compiles stop long before the heap gets tight: measurement on the Series
+// S showed that releasing pipeline handles does NOT return memory (free stayed pinned at ~510 MB
+// through 20 sweeps x 128 evictions - the driver keeps the pages committed), so eviction is
+// useless and the only working lever is to not over-commit in the first place. Demand (priority)
+// compiles keep a small reserve of their own: below it a needed compile is skipped and its draw
+// re-tries next frame, which still beats a DXC transient OOM.
+constexpr uint64_t kPrewarmMinFreeBytes = 900ull << 20;  // default; video.prewarm_min_free_mb overrides
+constexpr uint64_t kDemandMinFreeBytes = 256ull << 20;
 
 static void pipeline_worker() {
 #ifdef TRACY_ENABLE
@@ -1057,9 +1081,29 @@ static void pipeline_worker() {
         ++g_activeBackgroundPipelineWorkers;
       }
     }
-    if (!pipeline_compile_memory_ok()) {
-      // No memory headroom for a compile right now: return the request and wait for the working
-      // set to shrink rather than let DXC fail and remove the device.
+    const uint64_t prewarmMinFreeBytes =
+        g_config.prewarmMinFreeMb > 0
+            ? static_cast<uint64_t>(g_config.prewarmMinFreeMb) << 20
+            : kPrewarmMinFreeBytes;
+    const bool deferForMemory =
+        webgpu::available_physical_memory() <
+        (background ? prewarmMinFreeBytes : kDemandMinFreeBytes);
+    if (deferForMemory) {
+      // No headroom for this compile right now: return the request to the front of its queue and
+      // back off. Prewarm deferral is the normal steady state on a memory-constrained device (the
+      // resident set self-throttles to what the device can afford); demand deferral only happens
+      // near the ceiling and retries automatically next frame.
+      if (background) {
+        g_prewarmParked.store(true, std::memory_order_relaxed);
+        static bool s_parkLogged = false;
+        if (!s_parkLogged) {
+          s_parkLogged = true;
+          Log.warn("Pipeline prewarm parked at {} queued ({} MB free): the remaining pipelines "
+                   "compile on demand as scenes need them",
+                   g_backgroundPipelines.size() + g_priorityPipelines.size(),
+                   webgpu::available_physical_memory() >> 20);
+        }
+      }
       std::unique_lock lock{g_pipelineMutex};
       (background ? g_backgroundPipelines : g_priorityPipelines).push_front(std::move(pending));
       if (background) {
@@ -1070,6 +1114,9 @@ static void pipeline_worker() {
       continue;
     }
     g_inflightCompiles.fetch_add(1, std::memory_order_relaxed);
+    // A compile is actually running again (memory recovered after a park, or a demand draw needs
+    // its pipeline): clear the parked flag so the overlay reports "compiling", not "deferred".
+    g_prewarmParked.store(false, std::memory_order_relaxed);
     compile_pending_pipeline(std::move(pending));
     g_inflightCompiles.fetch_sub(1, std::memory_order_relaxed);
     if (background) {
@@ -1324,12 +1371,17 @@ uint32_t queued_pipeline_count() noexcept {
 #endif
 }
 
+bool prewarm_parked() noexcept {
+  return g_prewarmParked.load(std::memory_order_relaxed);
+}
+
 bool try_pipeline(PipelineRef ref, wgpu::RenderPipeline& pipeline) {
   std::scoped_lock lock{g_pipelineMutex};
   const auto it = g_pipelines.find(ref);
   if (it == g_pipelines.end()) {
     return false;
   }
+  it->second.lastUsedFrame = current_frame();
   pipeline = it->second.pipeline;
   return true;
 }
@@ -1346,21 +1398,36 @@ static bool wait_pipeline_impl(PipelineRef ref, wgpu::RenderPipeline& pipeline, 
       if (promote_pending_pipeline_for_wait(ref)) {
         g_pipelineCv.notify_all();
       }
-      // A persistent resolve is the last chance to produce its texture, so timing out here corrupts it
-      // permanently. Only a pass marked requireReadyPipelines takes this path.
+      // A persistent resolve is the last chance to produce its texture, so timing out here loses
+      // that copy (the pass produces its texture without it). Only a pass marked requireReady
+      // takes this path, and the bounded wait below beats an unkillable render-thread deadlock.
     }
-    g_pipelineCv.wait(lock, finished);
+    // Bounded wait. A compile that would satisfy this waiter can only be stalled while the memory
+    // gate holds it back, and the worker evicts idle pipelines in exactly that state, so a healthy
+    // pipeline arrives in well under a second. If it is still missing after 10 s something is
+    // genuinely wrong (worker dead, gate stuck): skip the draw instead of hanging - a missing draw
+    // is recoverable, a deadlocked render thread is not.
+    const bool finishedInTime = g_pipelineCv.wait_for(lock, std::chrono::seconds(10), finished);
+    if (!finishedInTime) {
+      lock.unlock();
+      Log.error("Pipeline 0x{:x} was still not compiled after 10 s; dropping its draw",
+                static_cast<uint64_t>(ref));
+      return false;
+    }
   }
   const auto it = g_pipelines.find(ref);
   if (it == g_pipelines.end()) {
     lock.unlock();
     if (fatalIfMissing) {
-      Log.fatal("Pipeline 0x{:x} is unavailable at its ordered draw boundary", static_cast<uint64_t>(ref));
+      Log.error("Pipeline 0x{:x} is unavailable at its ordered draw boundary; dropping its draw",
+                static_cast<uint64_t>(ref));
+    } else {
+      Log.error("Pipeline 0x{:x} is unavailable for a persistent resolve pass; dropping its draw",
+                static_cast<uint64_t>(ref));
     }
-    Log.error("Pipeline 0x{:x} is unavailable for a persistent resolve pass; dropping its draw",
-              static_cast<uint64_t>(ref));
     return false;
   }
+  it->second.lastUsedFrame = current_frame();
   pipeline = it->second.pipeline;
   return true;
 }
@@ -1380,3 +1447,5 @@ void aurora_set_skip_unready_pipelines(const bool enabled) { aurora::gfx::set_sk
 bool aurora_get_skip_unready_pipelines() { return aurora::gfx::skip_unready_pipelines(); }
 
 uint32_t aurora_get_queued_pipeline_count() { return aurora::gfx::queued_pipeline_count(); }
+
+bool aurora_get_prewarm_parked() { return aurora::gfx::prewarm_parked(); }

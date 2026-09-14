@@ -14,6 +14,11 @@ skip_unready_pipelines = true
 # out-of-memory), and one per available core elsewhere. Set it explicitly to
 # retune; on a PC it is safe to raise, on Xbox only lower-than-1 is meaningful.
 # pipeline_compile_workers = 0
+# Free memory (MB) the renderer keeps in reserve before background shader
+# precompilation pauses (0 or absent = 900 on Xbox). Lower it so more shaders
+# finish precompiling before the first race; raise it for a larger safety
+# margin. The rest always compile on demand the first time a scene needs them.
+# prewarm_min_free_mb = 900
 disable_copy_filter = true
 show_fps = true
 # Gamepad chord that opens the settings overlay: native button names

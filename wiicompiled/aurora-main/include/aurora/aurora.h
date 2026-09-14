@@ -129,7 +129,10 @@ typedef struct {
   // Threads compiling graphics pipelines at once. Zero selects the platform default: one on
   // the Xbox driver, which compiles against shared CPU/GPU memory, and the full worker pool
   // on anything else.
-  uint32_t pipelineCompileWorkers;
+    uint32_t pipelineCompileWorkers;
+    // Free-memory floor (MB) below which speculative pipeline prewarm stops. Zero = platform
+    // default (900 on Xbox). See the video.prewarm_min_free_mb config documentation.
+    uint32_t prewarmMinFreeMb;
 } AuroraConfig;
 
 typedef struct {

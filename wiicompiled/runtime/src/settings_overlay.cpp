@@ -898,7 +898,12 @@ void DrawShaderCompilationStatus() {
                                         ImGuiWindowFlags_NoSavedSettings;
     if (ImGui::Begin("Shader Compilation Status", nullptr, kFlags)) {
         ImGui::SetWindowFontScale(0.85f);
-        ImGui::Text("%u shader%s compiling", queuedPipelines, queuedPipelines == 1 ? "" : "s");
+        if (aurora_get_prewarm_parked()) {
+            ImGui::Text("%u shader%s deferred (out of memory; compile on use)", queuedPipelines,
+                        queuedPipelines == 1 ? "" : "s");
+        } else {
+            ImGui::Text("%u shader%s compiling", queuedPipelines, queuedPipelines == 1 ? "" : "s");
+        }
     }
     ImGui::End();
     ImGui::PopStyleVar();

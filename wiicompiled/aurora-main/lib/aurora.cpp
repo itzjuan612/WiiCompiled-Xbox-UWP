@@ -1605,6 +1605,7 @@ void record_frame_telemetry() {
 bool run_frame_worker_cycle(gfx::SealedFrame& sealedFrame) noexcept {
   ZoneScopedN("Frame worker cycle");
   webgpu::fail_if_device_lost();
+  try {
   SealedFrameContext ctx;
   std::vector<PresentationJob> presentationJobs;
   bool overlapEncode = false;
@@ -1665,6 +1666,28 @@ bool run_frame_worker_cycle(gfx::SealedFrame& sealedFrame) noexcept {
 
   record_frame_telemetry();
   return true;
+  } catch (const std::exception& e) {
+    // A transient allocation failure (std::bad_alloc) under the Series S memory ceiling during
+    // seal/encode must not escape this noexcept function and terminate the process. Drop the frame
+    // instead: release both phases so the producer stops waiting, and return true to keep the
+    // worker alive (false would tell frame_worker_main to shut down and freeze the game). Worst
+    // case is one un-presented frame, not a closed game.
+    Log.warn("Frame worker dropped a frame after an exception: {}", e.what());
+    std::lock_guard lock(g_frameWorker.mutex);
+    g_frameWorker.framePrepared = false;
+    g_frameWorker.sealed.store(true, std::memory_order_release);
+    g_frameWorker.ready.store(true, std::memory_order_release);
+    g_frameWorker.cv.notify_all();
+    return true;
+  } catch (...) {
+    Log.warn("Frame worker dropped a frame after an unknown exception");
+    std::lock_guard lock(g_frameWorker.mutex);
+    g_frameWorker.framePrepared = false;
+    g_frameWorker.sealed.store(true, std::memory_order_release);
+    g_frameWorker.ready.store(true, std::memory_order_release);
+    g_frameWorker.cv.notify_all();
+    return true;
+  }
 }
 #endif
 
